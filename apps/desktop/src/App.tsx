@@ -4,12 +4,14 @@ import {
   BookOpen,
   BrainCircuit,
   ClipboardList,
+  Download,
   Laptop,
   LogOut,
   MessageSquare,
   Moon,
   Settings,
   Sun,
+  X,
 } from 'lucide-react';
 import {
   apiRequest,
@@ -20,6 +22,11 @@ import {
   saveOfflineCache,
   setAuthToken,
 } from './api';
+import {
+  type AvailableUpdateInfo,
+  checkForDesktopUpdate,
+  installDesktopUpdate,
+} from './updater';
 import { initSupabaseAuthSync, signOutSupabase } from './supabase';
 import { AiMlLabView } from './components/AiMlLabView';
 import { AuthView } from './components/AuthView';
@@ -46,6 +53,11 @@ export const App: React.FC = () => {
   });
   const [offlineBanner, setOfflineBanner] = useState(false);
   const [passwordRecoveryPending, setPasswordRecoveryPending] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdateInfo | null>(null);
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   const toggleTheme = () => {
     setTheme((prev) => {
@@ -118,6 +130,35 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (tokenReady) loadWorkspace();
   }, [tokenReady]);
+
+  // Automatic silent background update check shortly after launch
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      checkForDesktopUpdate()
+        .then((res) => {
+          if (res.status === 'update_available' && res.update) {
+            setAvailableUpdate(res.update);
+          }
+        })
+        .catch(() => {});
+    }, 2500);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const handleInstallUpdate = async (target?: AvailableUpdateInfo) => {
+    const upd = target ?? availableUpdate;
+    if (!upd || installingUpdate) return;
+    setInstallingUpdate(true);
+    setUpdateError(null);
+    setUpdateProgress(0);
+    try {
+      await installDesktopUpdate(upd, (pct) => setUpdateProgress(pct));
+    } catch (err) {
+      setUpdateError(err instanceof Error ? err.message : 'Unable to install update automatically.');
+    } finally {
+      setInstallingUpdate(false);
+    }
+  };
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
@@ -284,6 +325,45 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* Signed Auto-Update Notification Strip */}
+      {availableUpdate && !updateBannerDismissed && (
+        <div className="shrink-0 border-b border-[var(--cs-accent-border)] bg-[var(--cs-accent-soft)] px-5 py-2 text-xs text-[var(--cs-ink)] flex flex-wrap items-center justify-between gap-3 cs-animate-view">
+          <div className="flex items-center gap-2 min-w-0">
+            <Download className="h-3.5 w-3.5 text-[var(--cs-accent)] shrink-0" />
+            <span className="truncate">
+              <strong>CoreSense v{availableUpdate.latestVersion}</strong> is available
+              {updateError ? ` — ${updateError}` : ''}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={installingUpdate}
+              onClick={() => handleInstallUpdate(availableUpdate)}
+              className="cs-btn-accent px-3 py-1 text-[11px] font-semibold cursor-pointer disabled:opacity-60"
+            >
+              {installingUpdate
+                ? updateProgress != null
+                  ? `Downloading ${updateProgress}%...`
+                  : 'Installing...'
+                : availableUpdate.canAutoInstall
+                  ? 'Update & Restart'
+                  : 'Download update'}
+            </button>
+            {!installingUpdate && (
+              <button
+                type="button"
+                onClick={() => setUpdateBannerDismissed(true)}
+                aria-label="Dismiss update banner"
+                className="p-1 text-[var(--cs-ink-muted)] hover:text-[var(--cs-ink)] cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Offline Status Strip */}
       {offlineBanner && (
         <div className="shrink-0 border-b border-[var(--cs-warn-border)] bg-[var(--cs-warn-soft)] px-5 py-2 text-xs text-[var(--cs-warn-ink)] flex items-center justify-between cs-animate-view">
@@ -320,6 +400,14 @@ export const App: React.FC = () => {
             onToggleTheme={toggleTheme}
             onRefreshAccount={loadWorkspace}
             onLoggedOut={handleLogout}
+            availableUpdate={availableUpdate}
+            onUpdateDetected={(upd) => {
+              setAvailableUpdate(upd);
+              setUpdateBannerDismissed(false);
+            }}
+            onInstallUpdate={handleInstallUpdate}
+            installingUpdate={installingUpdate}
+            updateProgress={updateProgress}
           />
         )}
       </main>

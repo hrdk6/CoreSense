@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for CoreSense main window (strictly scoped — no unrestricted shell execution)",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "updater:default", "process:allow-restart"]
 }

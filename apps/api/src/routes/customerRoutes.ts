@@ -278,27 +278,40 @@ export function registerCustomerRoutes(
     };
   });
 
+  const pickHigherSemver = (a: string, b: string): string => {
+    const pa = a.replace(/^v/i, '').split('.').map((n) => Number.parseInt(n, 10) || 0);
+    const pb = b.replace(/^v/i, '').split('.').map((n) => Number.parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i++) {
+      if ((pa[i] ?? 0) > (pb[i] ?? 0)) return a.replace(/^v/i, '');
+      if ((pa[i] ?? 0) < (pb[i] ?? 0)) return b.replace(/^v/i, '');
+    }
+    return a.replace(/^v/i, '');
+  };
+
   // Commercial Release & Auto-Update Manifest Endpoint
   app.get('/api/v1/releases/latest', async () => {
     const cfgRows = (await ownerDb.db.all('SELECT key, value_json FROM product_config WHERE key IN (?, ?)', 'latestDesktopVersion', 'latestMobileVersion')) as Array<{ key: string; value_json: string }>;
     const map = new Map(cfgRows.map((r) => [r.key, JSON.parse(r.value_json)]));
+    const desktopVersion = pickHigherSemver(CORESENSE_VERSION, String(map.get('latestDesktopVersion') || CORESENSE_VERSION));
+    const mobileVersion = pickHigherSemver(CORESENSE_VERSION, String(map.get('latestMobileVersion') || CORESENSE_VERSION));
     return {
       product: 'CoreSense',
       desktop: {
-        version: String(map.get('latestDesktopVersion') || CORESENSE_VERSION),
+        version: desktopVersion,
         releaseDate: '2026-11-22',
-        releaseUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/tag/v1.2.0',
-        notes: 'CoreSense v1.2.0 — Hybrid Vector + Lexical RRF RAG (768d gemini-embedding-2), Real-Time SSE Streaming Gemini 4 Copilot, Interactive AI/ML Evaluation & Telemetry Lab, Full Hardware Diagnostics (Desktop GPU/USB/BT/Audio/Stress + Mobile Wi-Fi/Hotspot/SoC), and Structured PCB Vision Inspector.',
+        releaseUrl: `https://github.com/hrdk6/CoreSense-Releases/releases/latest`,
+        updaterManifestUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/latest/download/latest.json',
+        notes: `CoreSense v${desktopVersion} — Signed 1-Click Desktop Auto-Updates, Hybrid Vector + Lexical RRF RAG (768d gemini-embedding-2), Real-Time SSE Streaming Gemini 4 Copilot, Interactive AI/ML Evaluation Lab, Full Hardware Expansion, and Structured PCB Vision Inspector.`,
         installers: {
-          windowsNsis: 'CoreSense_1.2.0_x64-setup.exe',
-          windowsMsi: 'CoreSense_1.2.0_x64_en-US.msi',
-          macosDmg: 'CoreSense_1.2.0_aarch64.dmg',
-          linuxDeb: 'CoreSense_1.2.0_amd64.deb',
-          linuxAppImage: 'CoreSense_1.2.0_amd64.AppImage',
+          windowsNsis: `CoreSense_${desktopVersion}_x64-setup.exe`,
+          windowsMsi: `CoreSense_${desktopVersion}_x64_en-US.msi`,
+          macosDmg: `CoreSense_${desktopVersion}_aarch64.dmg`,
+          linuxDeb: `CoreSense_${desktopVersion}_amd64.deb`,
+          linuxAppImage: `CoreSense_${desktopVersion}_amd64.AppImage`,
         },
       },
       mobile: {
-        version: String(map.get('latestMobileVersion') || CORESENSE_VERSION),
+        version: mobileVersion,
         androidPackage: 'com.coresense.mobile',
         iosBundleId: 'com.coresense.mobile',
       },

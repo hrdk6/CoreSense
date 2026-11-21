@@ -13,16 +13,19 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { CORESENSE_VERSION } from '@coresense/shared';
 import {
   apiRequest,
   detectClientPlatform,
   getApiBaseUrl,
   getSyncSeq,
+  isTauriRuntime,
   setApiBaseUrl,
   setAuthToken,
   setSyncSeq,
 } from '../api';
 import { resetSupabaseClientCache } from '../supabase';
+import { type AvailableUpdateInfo, checkForDesktopUpdate } from '../updater';
 
 export interface AccountSnapshot {
   user: {
@@ -59,7 +62,23 @@ export const SettingsView: React.FC<{
   onToggleTheme: () => void;
   onRefreshAccount: () => Promise<void>;
   onLoggedOut: () => void;
-}> = ({ account, theme, onToggleTheme, onRefreshAccount, onLoggedOut }) => {
+  availableUpdate?: AvailableUpdateInfo | null;
+  onUpdateDetected?: (upd: AvailableUpdateInfo) => void;
+  onInstallUpdate?: (upd?: AvailableUpdateInfo) => Promise<void>;
+  installingUpdate?: boolean;
+  updateProgress?: number | null;
+}> = ({
+  account,
+  theme,
+  onToggleTheme,
+  onRefreshAccount,
+  onLoggedOut,
+  availableUpdate = null,
+  onUpdateDetected,
+  onInstallUpdate,
+  installingUpdate = false,
+  updateProgress = null,
+}) => {
   const [byokProvider, setByokProvider] = useState<'gemini' | 'openai' | 'ollama'>('gemini');
   const [byokKey, setByokKey] = useState('');
   const [byokModel, setByokModel] = useState('gemini-4-hydrogen');
@@ -75,6 +94,22 @@ export const SettingsView: React.FC<{
   const [testingAi, setTestingAi] = useState(false);
   const [serverUrlInput, setServerUrlInput] = useState(() => getApiBaseUrl());
   const [serverHealth, setServerHealth] = useState<{ ok: boolean; text: string } | null>(null);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateCheckMsg, setUpdateCheckMsg] = useState<string | null>(null);
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdates(true);
+    setUpdateCheckMsg(null);
+    try {
+      const res = await checkForDesktopUpdate();
+      setUpdateCheckMsg(res.message);
+      if (res.status === 'update_available' && res.update) {
+        onUpdateDetected?.(res.update);
+      }
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
 
   const handleTestAiProvider = async () => {
     setTestingAi(true);
@@ -408,6 +443,54 @@ export const SettingsView: React.FC<{
           >
             <span>{aiTestResult.message}</span>
             <span>{aiTestResult.latencyMs}ms</span>
+          </div>
+        )}
+      </div>
+
+      {/* Software Updates (Signed Tauri v2 Auto-Updater) */}
+      <div className="cs-panel p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <h2 className="cs-heading text-base font-bold text-[var(--cs-ink)] flex items-center gap-2">
+              <Download className="h-4 w-4 text-[var(--cs-accent)]" />
+              <span>Software updates</span>
+            </h2>
+            <p className="text-xs text-[var(--cs-ink-muted)] font-mono">
+              Installed: v{CORESENSE_VERSION} • Channel:{' '}
+              {isTauriRuntime() ? 'Signed Tauri Auto-Updater (Ed25519)' : 'Web / Browser Preview'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {availableUpdate && onInstallUpdate && (
+              <button
+                type="button"
+                disabled={installingUpdate}
+                onClick={() => onInstallUpdate(availableUpdate)}
+                className="cs-btn-accent px-3.5 py-2 text-xs font-semibold cursor-pointer disabled:opacity-50"
+              >
+                {installingUpdate
+                  ? updateProgress != null
+                    ? `Downloading ${updateProgress}%...`
+                    : 'Installing...'
+                  : availableUpdate.canAutoInstall
+                    ? `Install v${availableUpdate.latestVersion} & Restart`
+                    : `Download v${availableUpdate.latestVersion}`}
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={checkingUpdates}
+              onClick={handleCheckUpdates}
+              className="cs-btn-secondary flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${checkingUpdates ? 'animate-spin' : ''}`} />
+              <span>{checkingUpdates ? 'Checking...' : 'Check for updates'}</span>
+            </button>
+          </div>
+        </div>
+        {updateCheckMsg && (
+          <div className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] px-3 py-2 text-xs text-[var(--cs-ink-2)]">
+            {updateCheckMsg}
           </div>
         )}
       </div>

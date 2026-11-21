@@ -1,6 +1,6 @@
 [package]
 name = "coresense-desktop"
-version = "1.2.0"
+version = "1.2.1"
 description = "CoreSense — AI-powered electronics diagnostics and repair intelligence desktop application"
 authors = ["CoreSense"]
 edition = "2021"
@@ -14,6 +14,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.33"
