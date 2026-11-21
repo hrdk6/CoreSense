@@ -21,16 +21,22 @@ export async function createCoreSenseServer(
   options: { inMemoryDbs?: boolean; logger?: boolean } = {},
 ): Promise<CoreSenseServerContext> {
   const config = loadConfig(overrides);
+  const usePostgres = !options.inMemoryDbs && Boolean(config.customerDatabaseUrl);
   const customerDb = new CustomerDatabase(
     config.dataDir,
     options.inMemoryDbs ? ':memory:' : 'coresense_customer.db',
+    usePostgres ? config.customerDatabaseUrl : undefined,
   );
   const ownerDb = new OwnerDatabase(
     config.dataDir,
     config.ownerInitialEmail,
     config.ownerInitialPassword,
     options.inMemoryDbs ? ':memory:' : 'coresense_owner.db',
+    usePostgres ? config.ownerDatabaseUrl : undefined,
   );
+
+  await customerDb.init();
+  await ownerDb.init();
 
   const app = Fastify({
     logger: options.logger ?? false,
@@ -76,7 +82,7 @@ export async function createCoreSenseServer(
     const routePattern = req.routeOptions?.url || req.url.split('?')[0];
     if (!routePattern.startsWith('/owner-api/v1/reliability')) {
       try {
-        ownerDb.recordApiMetric(req.method, routePattern, reply.statusCode, latencyMs);
+        await ownerDb.recordApiMetric(req.method, routePattern, reply.statusCode, latencyMs);
       } catch {
         // Non-blocking metrics recording
       }
@@ -96,8 +102,8 @@ export async function createCoreSenseServer(
 
   const close = async () => {
     await app.close();
-    customerDb.close();
-    ownerDb.close();
+    await customerDb.close();
+    await ownerDb.close();
   };
 
   return { app, customerDb, ownerDb, config, close };

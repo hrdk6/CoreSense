@@ -1,12 +1,15 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { KeyRound, Moon, ShieldCheck, Sun } from 'lucide-react';
 import { apiRequest, detectClientPlatform, getInstallId, setAuthToken } from '../api';
+import { getSupabaseClient } from '../supabase';
 import { BrandLogo } from './BrandLogo';
 
 interface AuthViewProps {
   onAuthenticated: () => void;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
+  passwordRecoveryPending?: boolean;
+  onPasswordRecoveryComplete?: () => void;
 }
 
 type ScopeChannel = 'thermal' | 'storage' | 'power';
@@ -60,8 +63,16 @@ const SCOPE_CHANNELS: Record<
   },
 };
 
-export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onToggleTheme }) => {
-  const [mode, setMode] = useState<'login' | 'register' | 'recover'>('login');
+export const AuthView: React.FC<AuthViewProps> = ({
+  onAuthenticated,
+  theme,
+  onToggleTheme,
+  passwordRecoveryPending = false,
+  onPasswordRecoveryComplete,
+}) => {
+  const [mode, setMode] = useState<'login' | 'register' | 'recover'>(
+    passwordRecoveryPending ? 'recover' : 'login',
+  );
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -71,19 +82,120 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
   const [recoveryCode, setRecoveryCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [recoverySent, setRecoverySent] = useState<string | null>(null);
+  const [supabaseActive, setSupabaseActive] = useState(false);
+  const [unconfirmedEmail, setUnconfirmedEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    getSupabaseClient()
+      .then((sb) => setSupabaseActive(Boolean(sb)))
+      .catch(() => setSupabaseActive(false));
+  }, []);
+
+  useEffect(() => {
+    if (passwordRecoveryPending) setMode('recover');
+  }, [passwordRecoveryPending]);
+
   const activeScope = SCOPE_CHANNELS[scopeChannel];
   const modeIndex = mode === 'login' ? 0 : mode === 'register' ? 1 : 2;
+
+  const handleResendConfirmation = async () => {
+    if (!unconfirmedEmail) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const sb = await getSupabaseClient();
+      if (sb) {
+        const { error: resendErr } = await sb.auth.resend({
+          type: 'signup',
+          email: unconfirmedEmail,
+        });
+        if (resendErr) throw resendErr;
+        setSuccessMsg(`Confirmation email resent to ${unconfirmedEmail}. Check your inbox (and spam folder).`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to resend confirmation email.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccessMsg(null);
+    setUnconfirmedEmail(null);
     setLoading(true);
     try {
+      const sb = await getSupabaseClient();
+
+      if (sb) {
+        if (mode === 'login') {
+          const { data, error: signInErr } = await sb.auth.signInWithPassword({
+            email: email.trim(),
+            password,
+          });
+          if (signInErr) {
+            if (/email not confirmed/i.test(signInErr.message)) {
+              setUnconfirmedEmail(email.trim());
+            }
+            throw signInErr;
+          }
+          if (!data.session?.access_token) {
+            throw new Error('Sign-in did not return an active session. Please check your email confirmation.');
+          }
+          setAuthToken(data.session.access_token);
+          onAuthenticated();
+        } else if (mode === 'register') {
+          const cleanName = (displayName || email.split('@')[0]).trim();
+          const { data, error: signUpErr } = await sb.auth.signUp({
+            email: email.trim(),
+            password,
+            options: {
+              emailRedirectTo: window.location.origin,
+              data: { display_name: cleanName },
+            },
+          });
+          if (signUpErr) throw signUpErr;
+
+          if (data.session?.access_token) {
+            setAuthToken(data.session.access_token);
+            await apiRequest('/api/v1/account/settings', {
+              method: 'PATCH',
+              body: { telemetryOptIn, externalAiConsent, displayName: cleanName },
+            }).catch(() => {});
+            onAuthenticated();
+          } else {
+            setUnconfirmedEmail(email.trim());
+            setSuccessMsg(
+              `Account created! Check ${email.trim()} and click the verification link to activate your workspace, then sign in.`,
+            );
+            setMode('login');
+          }
+        } else if (mode === 'recover') {
+          if (passwordRecoveryPending) {
+            const { error: updErr } = await sb.auth.updateUser({ password: newPassword });
+            if (updErr) throw updErr;
+            setSuccessMsg('Password updated. You can now sign in with your new password.');
+            setNewPassword('');
+            onPasswordRecoveryComplete?.();
+            setMode('login');
+          } else {
+            const { error: resetErr } = await sb.auth.resetPasswordForEmail(email.trim(), {
+              redirectTo: window.location.origin,
+            });
+            if (resetErr) throw resetErr;
+            setSuccessMsg(
+              `If an account matches ${email.trim()}, a password reset link has been sent to your inbox.`,
+            );
+          }
+        }
+        return;
+      }
+
+      // Local / Offline API Auth Fallback
       if (mode === 'login') {
         const res = await apiRequest<{ accessToken: string }>('/api/v1/auth/login', {
           method: 'POST',
@@ -348,7 +460,11 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
                 ? 'Sign in to access your devices, telemetry snapshots, and repair cases.'
                 : mode === 'register'
                   ? 'Create a free personal workspace with full diagnostics, manuals, and cross-device sync.'
-                  : 'Request a 6-digit recovery code for your registered email address.'}
+                  : passwordRecoveryPending
+                    ? 'Choose a new password for your CoreSense account.'
+                    : supabaseActive
+                      ? 'Enter your email address to receive a password reset link.'
+                      : 'Request a 6-digit recovery code for your registered email address.'}
             </p>
           </div>
 
@@ -398,19 +514,21 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
               </div>
             )}
 
-            <div>
-              <label className="block text-xs font-medium text-[var(--cs-ink-2)] mb-1.5">
-                Email address
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="cs-input w-full px-3.5 py-2.5 text-sm"
-              />
-            </div>
+            {!(mode === 'recover' && passwordRecoveryPending) && (
+              <div>
+                <label className="block text-xs font-medium text-[var(--cs-ink-2)] mb-1.5">
+                  Email address
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="cs-input w-full px-3.5 py-2.5 text-sm"
+                />
+              </div>
+            )}
 
             {mode !== 'recover' && (
               <div>
@@ -429,21 +547,23 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
               </div>
             )}
 
-            {mode === 'recover' && recoverySent && (
+            {mode === 'recover' && (passwordRecoveryPending || recoverySent) && (
               <div className="space-y-4 cs-animate-view">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--cs-ink-2)] mb-1.5">
-                    6-digit recovery code
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={recoveryCode}
-                    onChange={(e) => setRecoveryCode(e.target.value)}
-                    placeholder="123456"
-                    className="cs-input w-full px-3.5 py-2.5 text-sm font-mono cs-tabular"
-                  />
-                </div>
+                {!passwordRecoveryPending && (
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--cs-ink-2)] mb-1.5">
+                      6-digit recovery code
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={recoveryCode}
+                      onChange={(e) => setRecoveryCode(e.target.value)}
+                      placeholder="123456"
+                      className="cs-input w-full px-3.5 py-2.5 text-sm font-mono cs-tabular"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="block text-xs font-medium text-[var(--cs-ink-2)] mb-1.5">
                     New password
@@ -491,14 +611,32 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
             )}
 
             {error && (
-              <div className="rounded-lg border border-[var(--cs-danger-border)] bg-[var(--cs-danger-soft)] px-3.5 py-2.5 text-xs text-[var(--cs-danger-ink)] cs-animate-view">
-                {error}
+              <div className="rounded-lg border border-[var(--cs-danger-border)] bg-[var(--cs-danger-soft)] px-3.5 py-2.5 text-xs text-[var(--cs-danger-ink)] space-y-2 cs-animate-view">
+                <div>{error}</div>
+                {unconfirmedEmail && (
+                  <button
+                    type="button"
+                    onClick={handleResendConfirmation}
+                    className="underline font-semibold cursor-pointer"
+                  >
+                    Resend confirmation email
+                  </button>
+                )}
               </div>
             )}
 
             {successMsg && (
-              <div className="rounded-lg border border-[var(--cs-ok-border)] bg-[var(--cs-ok-soft)] px-3.5 py-2.5 text-xs text-[var(--cs-ok-ink)] cs-animate-view">
-                {successMsg}
+              <div className="rounded-lg border border-[var(--cs-ok-border)] bg-[var(--cs-ok-soft)] px-3.5 py-2.5 text-xs text-[var(--cs-ok-ink)] space-y-2 cs-animate-view">
+                <div>{successMsg}</div>
+                {unconfirmedEmail && (
+                  <button
+                    type="button"
+                    onClick={handleResendConfirmation}
+                    className="underline font-semibold cursor-pointer"
+                  >
+                    Didn't receive it? Resend confirmation email
+                  </button>
+                )}
               </div>
             )}
 
@@ -515,9 +653,11 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
                     ? 'Sign in'
                     : mode === 'register'
                       ? 'Create workspace'
-                      : recoverySent
-                        ? 'Reset password'
-                        : 'Send recovery code'}
+                      : passwordRecoveryPending || recoverySent
+                        ? 'Update password'
+                        : supabaseActive
+                          ? 'Send reset link'
+                          : 'Send recovery code'}
               </span>
             </button>
           </form>

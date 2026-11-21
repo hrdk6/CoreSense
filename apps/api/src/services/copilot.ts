@@ -1149,7 +1149,7 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
   // If critical safety block triggered, return deterministic safety refusal immediately
   if (safety.blockDirectRepairInstructions) {
     const reply = composeLocalDiagnosticReply(input, insights, safety);
-    input.ownerDb.recordAiUsage({
+    await input.ownerDb.recordAiUsage({
       anonymousUserHash: input.anonymousUserHash,
       provider: 'coresense-safety-gate',
       model: 'hardware-safety-policy-v1',
@@ -1271,7 +1271,7 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
         outputTokens = res.outputTokens;
       }
 
-      input.ownerDb.recordAiUsage({
+      await input.ownerDb.recordAiUsage({
         anonymousUserHash: input.anonymousUserHash,
         provider,
         model,
@@ -1284,7 +1284,7 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
         success: true,
       });
     } catch (err) {
-      input.ownerDb.recordAiUsage({
+      await input.ownerDb.recordAiUsage({
         anonymousUserHash: input.anonymousUserHash,
         provider,
         model,
@@ -1308,7 +1308,7 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
   } else {
     assistantReply = composeLocalDiagnosticReply(input, insights, safety);
     outputTokens = estimateTokenCount(assistantReply);
-    input.ownerDb.recordAiUsage({
+    await input.ownerDb.recordAiUsage({
       anonymousUserHash: input.anonymousUserHash,
       provider,
       model,

@@ -89,9 +89,10 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       },
     });
     expect(byokSave.statusCode).toBe(200);
-    const dbUser = ctx.customerDb.db
-      .prepare('SELECT byok_encrypted_key FROM users WHERE email = ?')
-      .get('alice@example.com') as { byok_encrypted_key: string };
+    const dbUser = (await ctx.customerDb.db.get(
+      'SELECT byok_encrypted_key FROM users WHERE email = ?',
+      'alice@example.com',
+    )) as { byok_encrypted_key: string };
     expect(dbUser.byok_encrypted_key).toContain('v1:');
     expect(dbUser.byok_encrypted_key).not.toContain('AIzaSyFakeSecretTestKey');
 
@@ -430,8 +431,8 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
     }
 
     // HARD PRIVACY AUDIT: Scan ALL owner DB tables for customer PII/private repair content
-    const allOwnerEvents = JSON.stringify(ctx.ownerDb.db.prepare('SELECT * FROM product_events').all());
-    const allAiLedger = JSON.stringify(ctx.ownerDb.db.prepare('SELECT * FROM ai_usage_ledger').all());
+    const allOwnerEvents = JSON.stringify(await ctx.ownerDb.db.all('SELECT * FROM product_events'));
+    const allAiLedger = JSON.stringify(await ctx.ownerDb.db.all('SELECT * FROM ai_usage_ledger'));
     const combinedOwnerTelemetry = `${allOwnerEvents} ${allAiLedger}`;
     expect(combinedOwnerTelemetry).not.toContain('alice@example.com');
     expect(combinedOwnerTelemetry).not.toContain('bob@example.com');
@@ -453,7 +454,7 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       headers: { Authorization: `Bearer ${userBToken}` },
     });
     expect(delRes.statusCode).toBe(200);
-    const stillExists = ctx.customerDb.db.prepare('SELECT id FROM users WHERE email = ?').get('bob@example.com');
+    const stillExists = await ctx.customerDb.db.get('SELECT id FROM users WHERE email = ?', 'bob@example.com');
     expect(stillExists).toBeUndefined();
   });
 });

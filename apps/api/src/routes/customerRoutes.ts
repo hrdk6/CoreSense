@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { createClient } from '@supabase/supabase-js';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
@@ -100,26 +101,126 @@ export function registerCustomerRoutes(
 ): void {
   const { customerDb, ownerDb, config } = deps;
 
+  const supabaseEnabled = Boolean(config.supabaseUrl && config.supabaseAnonKey);
+  const supabaseClient = supabaseEnabled
+    ? createClient(config.supabaseUrl, config.supabaseAnonKey, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      })
+    : null;
+
+  // Short-lived cache (60s) of verified Supabase JWT -> user metadata to avoid redundant network hops
+  const verifiedSupabaseCache = new Map<
+    string,
+    { id: string; email: string; displayName: string; expMs: number }
+  >();
+
+  const provisionSupabaseUser = async (
+    sbUser: { id: string; email: string; displayName: string },
+    req: FastifyRequest,
+  ): Promise<CustomerUserRow> => {
+    const existingById = (await customerDb.db.get(
+      'SELECT * FROM users WHERE id = ?',
+      sbUser.id,
+    )) as CustomerUserRow | undefined;
+    if (existingById) return existingById;
+
+    const email = sbUser.email.toLowerCase().trim();
+    const existingByEmail = (await customerDb.db.get(
+      'SELECT * FROM users WHERE email = ?',
+      email,
+    )) as CustomerUserRow | undefined;
+    if (existingByEmail) return existingByEmail;
+
+    const now = new Date().toISOString();
+    await customerDb.db.run(
+      `INSERT OR IGNORE INTO users (
+        id, email, display_name, password_hash,
+        telemetry_opt_in, external_ai_consent, onboarding_completed, created_at, updated_at
+      ) VALUES (?, ?, ?, 'supabase_managed', 1, 1, 0, ?, ?)`,
+      sbUser.id,
+      email,
+      sbUser.displayName,
+      now,
+      now,
+    );
+
+    const platformHeader = String(req.headers['x-coresense-platform'] || 'windows');
+    const platform = PlatformSchema.safeParse(platformHeader).success
+      ? (platformHeader as z.infer<typeof PlatformSchema>)
+      : 'windows';
+    const anonHash = createAnonymousUserHash(sbUser.id, config.jwtSecret);
+    await ownerDb.recordAccountRegistration(anonHash, platform);
+    await ownerDb.recordProductEvent({
+      eventName: 'account_registered',
+      anonymousInstallId: String(req.headers['x-coresense-install-id'] || `sb-${anonHash.slice(0, 12)}`).slice(0, 80),
+      anonymousUserHash: anonHash,
+      platform,
+      appVersion: String(req.headers['x-coresense-version'] || CORESENSE_VERSION).slice(0, 32),
+      success: true,
+    });
+    await customerDb.recordAudit(sbUser.id, 'account_registered', 'user', sbUser.id, { provider: 'supabase' });
+
+    const created = (await customerDb.db.get(
+      'SELECT * FROM users WHERE id = ? OR email = ?',
+      sbUser.id,
+      email,
+    )) as unknown as CustomerUserRow;
+    return created;
+  };
+
   const requireCustomerAuth = async (req: FastifyRequest, reply: FastifyReply) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return reply.code(401).send({ error: 'Authentication required' });
     }
     const token = authHeader.slice(7);
-    const payload = verifyJwt(token, config.jwtSecret, 'coresense-customer');
-    if (!payload) {
-      return reply.code(401).send({ error: 'Invalid or expired customer token' });
+
+    // 1. Check local HS256 JWT (offline / self-hosted / test mode)
+    const localPayload = verifyJwt(token, config.jwtSecret, 'coresense-customer');
+    if (localPayload) {
+      const user = (await customerDb.db.get(
+        'SELECT * FROM users WHERE id = ?',
+        localPayload.sub,
+      )) as CustomerUserRow | undefined;
+      if (!user) {
+        return reply.code(401).send({ error: 'Account not found' });
+      }
+      req.customerUser = user;
+      return;
     }
-    const user = customerDb.db
-      .prepare('SELECT * FROM users WHERE id = ?')
-      .get(payload.sub) as CustomerUserRow | undefined;
-    if (!user) {
-      return reply.code(401).send({ error: 'Account not found' });
+
+    // 2. Verify Supabase Auth JWT when Supabase is configured
+    if (supabaseClient) {
+      const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+      const cached = verifiedSupabaseCache.get(tokenHash);
+      if (cached && cached.expMs > Date.now()) {
+        req.customerUser = await provisionSupabaseUser(cached, req);
+        return;
+      }
+
+      const { data, error } = await supabaseClient.auth.getUser(token);
+      if (error || !data?.user || !data.user.email) {
+        return reply.code(401).send({ error: 'Invalid or expired session token. Please sign in again.' });
+      }
+      const meta = (data.user.user_metadata || {}) as Record<string, unknown>;
+      const displayName =
+        String(meta.display_name || meta.full_name || meta.name || data.user.email.split('@')[0]).slice(0, 80);
+      const sbInfo = {
+        id: data.user.id,
+        email: data.user.email,
+        displayName,
+        expMs: Date.now() + 60_000,
+      };
+      if (verifiedSupabaseCache.size > 2000) verifiedSupabaseCache.clear();
+      verifiedSupabaseCache.set(tokenHash, sbInfo);
+      req.customerUser = await provisionSupabaseUser(sbInfo, req);
+      return;
     }
-    req.customerUser = user;
+
+    return reply.code(401).send({ error: 'Invalid or expired customer token' });
   };
 
-  const emitUserTelemetry = (
+  const emitUserTelemetry = async (
     user: CustomerUserRow,
     eventName: Parameters<typeof ownerDb.recordProductEvent>[0]['eventName'],
     req: FastifyRequest,
@@ -133,7 +234,7 @@ export function registerCustomerRoutes(
     const appVersion = String(req.headers['x-coresense-version'] || CORESENSE_VERSION).slice(0, 32);
     const installId = String(req.headers['x-coresense-install-id'] || `user-${user.id.slice(0, 12)}`).slice(0, 80);
 
-    ownerDb.recordProductEvent({
+    await ownerDb.recordProductEvent({
       eventName,
       anonymousInstallId: installId,
       anonymousUserHash: createAnonymousUserHash(user.id, config.jwtSecret),
@@ -152,32 +253,42 @@ export function registerCustomerRoutes(
       status: 'ok',
       product: 'CoreSense',
       version: CORESENSE_VERSION,
+      database: customerDb.db.dialect,
       integrations: {
+        supabaseAuthConfigured: supabaseEnabled,
         geminiConfigured: Boolean(config.geminiApiKey),
         openaiConfigured: Boolean(config.openaiApiKey),
-        stripeConfigured: Boolean(config.stripeSecretKey),
         localDiagnosticEngineActive: true,
       },
       timestamp: new Date().toISOString(),
     };
   });
 
+  // Public non-secret auth discovery for Desktop & Mobile clients
+  app.get('/api/v1/auth/config', async () => {
+    return {
+      supabaseEnabled,
+      supabaseUrl: supabaseEnabled ? config.supabaseUrl : null,
+      supabaseAnonKey: supabaseEnabled ? config.supabaseAnonKey : null,
+    };
+  });
+
   // Commercial Release & Auto-Update Manifest Endpoint
   app.get('/api/v1/releases/latest', async () => {
-    const cfgRows = ownerDb.db
-      .prepare('SELECT key, value_json FROM product_config WHERE key IN (?, ?)')
-      .all('latestDesktopVersion', 'latestMobileVersion') as Array<{ key: string; value_json: string }>;
+    const cfgRows = (await ownerDb.db.all('SELECT key, value_json FROM product_config WHERE key IN (?, ?)', 'latestDesktopVersion', 'latestMobileVersion')) as Array<{ key: string; value_json: string }>;
     const map = new Map(cfgRows.map((r) => [r.key, JSON.parse(r.value_json)]));
     return {
       product: 'CoreSense',
       desktop: {
         version: String(map.get('latestDesktopVersion') || CORESENSE_VERSION),
         releaseDate: '2026-11-21',
-        notes: 'CoreSense v1.0.0 — Precision Instrument UI, Native Rust Tauri Diagnostics, Multimodal AI Repair Copilot, FTS5 Technical Manuals RAG, and Desktop↔Mobile Sync.',
+        releaseUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/tag/v1.0.0',
+        notes: 'CoreSense v1.0.0 — 100% Free AI Electronics Diagnostics, Native Rust Tauri Diagnostics, Multimodal AI Repair Copilot, Technical Manuals RAG, and Desktop↔Mobile Sync.',
         installers: {
           windowsNsis: 'CoreSense_1.0.0_x64-setup.exe',
           windowsMsi: 'CoreSense_1.0.0_x64_en-US.msi',
-          macosDmg: 'CoreSense_1.0.0_universal.dmg',
+          macosDmg: 'CoreSense_1.0.0_aarch64.dmg',
+          linuxDeb: 'CoreSense_1.0.0_amd64.deb',
           linuxAppImage: 'CoreSense_1.0.0_amd64.AppImage',
         },
       },
@@ -199,7 +310,7 @@ export function registerCustomerRoutes(
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    ownerDb.recordInstallerDownload(
+    await ownerDb.recordInstallerDownload(
       parsed.data.platform,
       parsed.data.appVersion,
       parsed.data.channel,
@@ -219,14 +330,14 @@ export function registerCustomerRoutes(
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    const res = ownerDb.recordActivation(
+    const res = await ownerDb.recordActivation(
       parsed.data.installId,
       parsed.data.platform,
       parsed.data.appVersion,
       parsed.data.channel,
       parsed.data.countryCode,
     );
-    ownerDb.recordProductEvent({
+    await ownerDb.recordProductEvent({
       eventName: 'app_launched',
       anonymousInstallId: parsed.data.installId,
       platform: parsed.data.platform,
@@ -240,7 +351,7 @@ export function registerCustomerRoutes(
   app.post('/api/v1/telemetry/event', async (req, reply) => {
     const parsed = ProductTelemetryEventSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    ownerDb.recordProductEvent(parsed.data);
+    await ownerDb.recordProductEvent(parsed.data);
     return { ok: true };
   });
 
@@ -257,14 +368,14 @@ export function registerCustomerRoutes(
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    ownerDb.recordCrashReport(parsed.data);
+    await ownerDb.recordCrashReport(parsed.data);
     return { recorded: true };
   });
 
   // ==========================================================================
   // Personal Account Authentication & Privacy Controls
   // ==========================================================================
-  app.post('/api/v1/auth/register', async (req, reply) => {
+  app.post('/api/v1/auth/register', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const schema = z.object({
       email: z.string().email().max(160),
       password: z.string().min(8).max(128),
@@ -278,35 +389,30 @@ export function registerCustomerRoutes(
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
 
     const email = parsed.data.email.toLowerCase().trim();
-    const existing = customerDb.db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    const existing = await customerDb.db.get('SELECT id FROM users WHERE email = ?', email);
     if (existing) return reply.code(409).send({ error: 'An account with this email already exists.' });
 
     const userId = crypto.randomUUID();
     const now = new Date().toISOString();
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `INSERT INTO users (
           id, email, display_name, password_hash,
           telemetry_opt_in, external_ai_consent, onboarding_completed, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-      )
-      .run(
-        userId,
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`, userId,
         email,
         parsed.data.displayName.trim(),
         hashPassword(parsed.data.password),
         parsed.data.telemetryOptIn ? 1 : 0,
         parsed.data.externalAiConsent ? 1 : 0,
         now,
-        now,
-      );
+        now,);
 
-    customerDb.recordAudit(userId, 'account_registered', 'user', userId, {});
+    await customerDb.recordAudit(userId, 'account_registered', 'user', userId, {});
 
     const anonHash = createAnonymousUserHash(userId, config.jwtSecret);
-    ownerDb.recordAccountRegistration(anonHash, parsed.data.platform);
+    await ownerDb.recordAccountRegistration(anonHash, parsed.data.platform);
     if (parsed.data.telemetryOptIn) {
-      ownerDb.recordProductEvent({
+      await ownerDb.recordProductEvent({
         eventName: 'account_registered',
         anonymousInstallId: parsed.data.installId || `reg-${anonHash.slice(0, 12)}`,
         anonymousUserHash: anonHash,
@@ -316,7 +422,7 @@ export function registerCustomerRoutes(
       });
     }
 
-    const user = customerDb.db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as unknown as CustomerUserRow;
+    const user = (await customerDb.db.get('SELECT * FROM users WHERE id = ?', userId)) as unknown as CustomerUserRow;
     const accessToken = signJwt({ sub: user.id, aud: 'coresense-customer', role: 'customer' }, config.jwtSecret, 60 * 60 * 24 * 7);
 
     return reply.code(201).send({
@@ -325,7 +431,7 @@ export function registerCustomerRoutes(
     });
   });
 
-  app.post('/api/v1/auth/login', async (req, reply) => {
+  app.post('/api/v1/auth/login', { config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (req, reply) => {
     const schema = z.object({
       email: z.string().email(),
       password: z.string().min(1),
@@ -336,9 +442,9 @@ export function registerCustomerRoutes(
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
 
     const email = parsed.data.email.toLowerCase().trim();
-    const user = customerDb.db.prepare('SELECT * FROM users WHERE email = ?').get(email) as CustomerUserRow | undefined;
+    const user = (await customerDb.db.get('SELECT * FROM users WHERE email = ?', email)) as CustomerUserRow | undefined;
     if (!user || !verifyPassword(parsed.data.password, user.password_hash)) {
-      ownerDb.recordProductEvent({
+      await ownerDb.recordProductEvent({
         eventName: 'app_launched',
         anonymousInstallId: parsed.data.installId || 'auth-attempt',
         platform: parsed.data.platform,
@@ -350,27 +456,23 @@ export function registerCustomerRoutes(
     }
 
     const accessToken = signJwt({ sub: user.id, aud: 'coresense-customer', role: 'customer' }, config.jwtSecret, 60 * 60 * 24 * 7);
-    customerDb.recordAudit(user.id, 'account_login', 'user', user.id, { platform: parsed.data.platform });
-    emitUserTelemetry(user, 'app_launched', req, { platform: parsed.data.platform });
+    await customerDb.recordAudit(user.id, 'account_login', 'user', user.id, { platform: parsed.data.platform });
+    await emitUserTelemetry(user, 'app_launched', req, { platform: parsed.data.platform });
 
     return { accessToken, user: serializeUserProfile(user) };
   });
 
-  app.post('/api/v1/auth/recover/request', async (req, reply) => {
+  app.post('/api/v1/auth/recover/request', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
     const schema = z.object({ email: z.string().email() });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Valid email required.' });
-    const user = customerDb.db
-      .prepare('SELECT id FROM users WHERE email = ?')
-      .get(parsed.data.email.toLowerCase().trim()) as { id: string } | undefined;
+    const user = (await customerDb.db.get('SELECT id FROM users WHERE email = ?', parsed.data.email.toLowerCase().trim())) as { id: string } | undefined;
 
     if (user) {
       const resetCode = String(crypto.randomInt(100000, 999999));
       const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-      customerDb.db
-        .prepare('INSERT INTO password_resets (id, user_id, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
-        .run(crypto.randomUUID(), user.id, hashPassword(resetCode), expiresAt, new Date().toISOString());
-      customerDb.recordAudit(user.id, 'password_recovery_requested', 'user', user.id);
+      await customerDb.db.run('INSERT INTO password_resets (id, user_id, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)', crypto.randomUUID(), user.id, hashPassword(resetCode), expiresAt, new Date().toISOString());
+      await customerDb.recordAudit(user.id, 'password_recovery_requested', 'user', user.id);
       return {
         message: 'If an account matches this email, a recovery code has been generated.',
         // Returned ONLY in development mode so users can test account recovery without SMTP
@@ -380,7 +482,7 @@ export function registerCustomerRoutes(
     return { message: 'If an account matches this email, a recovery code has been generated.' };
   });
 
-  app.post('/api/v1/auth/recover/confirm', async (req, reply) => {
+  app.post('/api/v1/auth/recover/confirm', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req, reply) => {
     const schema = z.object({
       email: z.string().email(),
       code: z.string().min(6).max(16),
@@ -389,14 +491,10 @@ export function registerCustomerRoutes(
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
 
-    const user = customerDb.db
-      .prepare('SELECT id FROM users WHERE email = ?')
-      .get(parsed.data.email.toLowerCase().trim()) as { id: string } | undefined;
+    const user = (await customerDb.db.get('SELECT id FROM users WHERE email = ?', parsed.data.email.toLowerCase().trim())) as { id: string } | undefined;
     if (!user) return reply.code(400).send({ error: 'Invalid recovery request.' });
 
-    const resets = customerDb.db
-      .prepare('SELECT * FROM password_resets WHERE user_id = ? AND used_at IS NULL ORDER BY created_at DESC LIMIT 5')
-      .all(user.id) as Array<{ id: string; code_hash: string; expires_at: string }>;
+    const resets = (await customerDb.db.all('SELECT * FROM password_resets WHERE user_id = ? AND used_at IS NULL ORDER BY created_at DESC LIMIT 5', user.id)) as Array<{ id: string; code_hash: string; expires_at: string }>;
 
     const matched = resets.find(
       (r) => new Date(r.expires_at).getTime() > Date.now() && verifyPassword(parsed.data.code, r.code_hash),
@@ -404,11 +502,9 @@ export function registerCustomerRoutes(
     if (!matched) return reply.code(400).send({ error: 'Invalid or expired recovery code.' });
 
     const now = new Date().toISOString();
-    customerDb.db.prepare('UPDATE password_resets SET used_at = ? WHERE id = ?').run(now, matched.id);
-    customerDb.db
-      .prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?')
-      .run(hashPassword(parsed.data.newPassword), now, user.id);
-    customerDb.recordAudit(user.id, 'password_recovered', 'user', user.id);
+    await customerDb.db.run('UPDATE password_resets SET used_at = ? WHERE id = ?', now, matched.id);
+    await customerDb.db.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', hashPassword(parsed.data.newPassword), now, user.id);
+    await customerDb.recordAudit(user.id, 'password_recovered', 'user', user.id);
 
     return { ok: true, message: 'Password updated successfully. You may now sign in.' };
   });
@@ -416,18 +512,16 @@ export function registerCustomerRoutes(
   app.get('/api/v1/account/me', { preHandler: requireCustomerAuth }, async (req) => {
     const user = req.customerUser!;
     const ym = getCurrentYm();
-    const usage = (customerDb.db
-      .prepare('SELECT * FROM usage_counters WHERE user_id = ? AND period_ym = ?')
-      .get(user.id, ym) as { ai_messages: number; image_analyses: number; voice_interactions: number } | undefined) ?? {
+    const usage = ((await customerDb.db.get('SELECT * FROM usage_counters WHERE user_id = ? AND period_ym = ?', user.id, ym)) as { ai_messages: number; image_analyses: number; voice_interactions: number } | undefined) ?? {
       ai_messages: 0,
       image_analyses: 0,
       voice_interactions: 0,
     };
     const counts = {
-      devices: (customerDb.db.prepare('SELECT COUNT(*) as c FROM devices WHERE user_id = ? AND deleted_at IS NULL').get(user.id) as { c: number }).c,
-      documents: (customerDb.db.prepare('SELECT COUNT(*) as c FROM documents WHERE user_id = ? AND deleted_at IS NULL').get(user.id) as { c: number }).c,
-      investigations: (customerDb.db.prepare('SELECT COUNT(*) as c FROM investigations WHERE user_id = ? AND deleted_at IS NULL').get(user.id) as { c: number }).c,
-      cases: (customerDb.db.prepare('SELECT COUNT(*) as c FROM repair_cases WHERE user_id = ? AND deleted_at IS NULL').get(user.id) as { c: number }).c,
+      devices: ((await customerDb.db.get('SELECT COUNT(*) as c FROM devices WHERE user_id = ? AND deleted_at IS NULL', user.id)) as { c: number }).c,
+      documents: ((await customerDb.db.get('SELECT COUNT(*) as c FROM documents WHERE user_id = ? AND deleted_at IS NULL', user.id)) as { c: number }).c,
+      investigations: ((await customerDb.db.get('SELECT COUNT(*) as c FROM investigations WHERE user_id = ? AND deleted_at IS NULL', user.id)) as { c: number }).c,
+      cases: ((await customerDb.db.get('SELECT COUNT(*) as c FROM repair_cases WHERE user_id = ? AND deleted_at IS NULL', user.id)) as { c: number }).c,
     };
     return {
       user: serializeUserProfile(user),
@@ -496,8 +590,7 @@ export function registerCustomerRoutes(
       byokModel = d.byok.model ?? null;
     }
 
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `UPDATE users SET
           display_name = ?,
           telemetry_opt_in = ?,
@@ -510,10 +603,7 @@ export function registerCustomerRoutes(
           byok_base_url = ?,
           byok_model = ?,
           updated_at = ?
-        WHERE id = ?`,
-      )
-      .run(
-        d.displayName ?? user.display_name,
+        WHERE id = ?`, d.displayName ?? user.display_name,
         d.telemetryOptIn !== undefined ? (d.telemetryOptIn ? 1 : 0) : user.telemetry_opt_in,
         d.geoOptIn !== undefined ? (d.geoOptIn ? 1 : 0) : user.geo_opt_in,
         d.cloudSyncEnabled !== undefined ? (d.cloudSyncEnabled ? 1 : 0) : user.cloud_sync_enabled,
@@ -524,14 +614,13 @@ export function registerCustomerRoutes(
         byokBaseUrl,
         byokModel,
         now,
-        user.id,
-      );
+        user.id,);
 
-    const updated = customerDb.db.prepare('SELECT * FROM users WHERE id = ?').get(user.id) as unknown as CustomerUserRow;
+    const updated = (await customerDb.db.get('SELECT * FROM users WHERE id = ?', user.id)) as unknown as CustomerUserRow;
     if (d.onboardingCompleted && !user.onboarding_completed) {
-      emitUserTelemetry(updated, 'onboarding_completed', req);
+      await emitUserTelemetry(updated, 'onboarding_completed', req);
     }
-    customerDb.recordAudit(user.id, 'account_settings_updated', 'user', user.id);
+    await customerDb.recordAudit(user.id, 'account_settings_updated', 'user', user.id);
 
     return { user: serializeUserProfile(updated) };
   });
@@ -580,17 +669,17 @@ export function registerCustomerRoutes(
 
   app.get('/api/v1/account/export', { preHandler: requireCustomerAuth }, async (req) => {
     const user = req.customerUser!;
-    const devices = customerDb.db.prepare('SELECT * FROM devices WHERE user_id = ?').all(user.id);
-    const investigations = customerDb.db.prepare('SELECT * FROM investigations WHERE user_id = ?').all(user.id);
-    const messages = customerDb.db.prepare('SELECT * FROM investigation_messages WHERE user_id = ?').all(user.id);
-    const snapshots = customerDb.db.prepare('SELECT * FROM diagnostic_snapshots WHERE user_id = ?').all(user.id);
-    const documents = customerDb.db.prepare('SELECT * FROM documents WHERE user_id = ?').all(user.id);
-    const cases = customerDb.db.prepare('SELECT * FROM repair_cases WHERE user_id = ?').all(user.id);
-    const caseEntries = customerDb.db.prepare('SELECT * FROM repair_case_entries WHERE user_id = ?').all(user.id);
-    const expenses = customerDb.db.prepare('SELECT * FROM repair_expenses WHERE user_id = ?').all(user.id);
-    const auditLogs = customerDb.db.prepare('SELECT * FROM audit_logs WHERE user_id = ?').all(user.id);
+    const devices = await customerDb.db.all('SELECT * FROM devices WHERE user_id = ?', user.id);
+    const investigations = await customerDb.db.all('SELECT * FROM investigations WHERE user_id = ?', user.id);
+    const messages = await customerDb.db.all('SELECT * FROM investigation_messages WHERE user_id = ?', user.id);
+    const snapshots = await customerDb.db.all('SELECT * FROM diagnostic_snapshots WHERE user_id = ?', user.id);
+    const documents = await customerDb.db.all('SELECT * FROM documents WHERE user_id = ?', user.id);
+    const cases = await customerDb.db.all('SELECT * FROM repair_cases WHERE user_id = ?', user.id);
+    const caseEntries = await customerDb.db.all('SELECT * FROM repair_case_entries WHERE user_id = ?', user.id);
+    const expenses = await customerDb.db.all('SELECT * FROM repair_expenses WHERE user_id = ?', user.id);
+    const auditLogs = await customerDb.db.all('SELECT * FROM audit_logs WHERE user_id = ?', user.id);
 
-    customerDb.recordAudit(user.id, 'account_data_exported', 'user', user.id);
+    await customerDb.recordAudit(user.id, 'account_data_exported', 'user', user.id);
     return {
       exportedAt: new Date().toISOString(),
       product: 'CoreSense Personal Data Export',
@@ -610,20 +699,20 @@ export function registerCustomerRoutes(
   app.delete('/api/v1/account', { preHandler: requireCustomerAuth }, async (req) => {
     const user = req.customerUser!;
     const anonHash = createAnonymousUserHash(user.id, config.jwtSecret);
-    // Clean up FTS chunks and uploaded files
-    customerDb.db.prepare('DELETE FROM document_chunks_fts WHERE user_id = ?').run(user.id);
-    const attachments = customerDb.db
-      .prepare('SELECT storage_path FROM media_attachments WHERE user_id = ?')
-      .all(user.id) as Array<{ storage_path: string }>;
+    // Clean up FTS chunks (SQLite) and uploaded files
+    if (customerDb.db.dialect === 'sqlite') {
+      await customerDb.db.run('DELETE FROM document_chunks_fts WHERE user_id = ?', user.id);
+    }
+    const attachments = (await customerDb.db.all('SELECT storage_path FROM media_attachments WHERE user_id = ?', user.id)) as Array<{ storage_path: string }>;
     for (const a of attachments) {
       try {
         if (fs.existsSync(a.storage_path)) fs.unlinkSync(a.storage_path);
       } catch {}
     }
-    customerDb.db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    await customerDb.db.run('DELETE FROM users WHERE id = ?', user.id);
 
-    ownerDb.recordAccountDeletion(anonHash);
-    emitUserTelemetry(user, 'account_deleted', req);
+    await ownerDb.recordAccountDeletion(anonHash);
+    await emitUserTelemetry(user, 'account_deleted', req);
     return { deleted: true, message: 'Account and all associated private personal workspace records permanently deleted.' };
   });
 
@@ -632,17 +721,14 @@ export function registerCustomerRoutes(
   // ==========================================================================
   app.get('/api/v1/devices', { preHandler: requireCustomerAuth }, async (req) => {
     const includeArchived = (req.query as Record<string, string>).includeArchived === 'true';
-    const rows = customerDb.db
-      .prepare(
+    const rows = (await customerDb.db.all(
         `SELECT d.*,
           (SELECT COUNT(*) FROM repair_cases rc WHERE rc.device_id = d.id AND rc.deleted_at IS NULL) AS case_count,
           (SELECT COUNT(*) FROM diagnostic_snapshots ds WHERE ds.device_id = d.id) AS snapshot_count,
           (SELECT COALESCE(SUM(re.amount), 0) FROM repair_expenses re JOIN repair_cases rc2 ON rc2.id = re.repair_case_id WHERE rc2.device_id = d.id) AS total_repair_spend
          FROM devices d
          WHERE d.user_id = ? AND d.deleted_at IS NULL ${includeArchived ? '' : 'AND d.archived = 0'}
-         ORDER BY d.updated_at DESC`,
-      )
-      .all(req.customerUser!.id) as Array<Record<string, unknown>>;
+         ORDER BY d.updated_at DESC`, req.customerUser!.id)) as Array<Record<string, unknown>>;
 
     return {
       devices: rows.map((r) => ({
@@ -677,16 +763,12 @@ export function registerCustomerRoutes(
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const d = parsed.data;
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `INSERT INTO devices (
           id, user_id, name, category, manufacturer, model, serial_or_tag,
           os_name, os_version, specs_json, notes, purchase_date, purchase_price,
           currency, archived, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
-      )
-      .run(
-        id,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`, id,
         user.id,
         d.name,
         d.category,
@@ -701,10 +783,9 @@ export function registerCustomerRoutes(
         d.purchasePrice ?? null,
         d.currency,
         now,
-        now,
-      );
-    customerDb.recordSyncChange(user.id, 'device', id, 'upsert', 1);
-    emitUserTelemetry(user, 'device_added', req, { metadata: { category: d.category } });
+        now,);
+    await customerDb.recordSyncChange(user.id, 'device', id, 'upsert', 1);
+    await emitUserTelemetry(user, 'device_added', req, { metadata: { category: d.category } });
 
     return reply.code(201).send({
       device: { id, ...d, archived: false, revision: 1, createdAt: now, updatedAt: now },
@@ -714,9 +795,7 @@ export function registerCustomerRoutes(
   app.patch('/api/v1/devices/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const user = req.customerUser!;
-    const existing = customerDb.db
-      .prepare('SELECT * FROM devices WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, user.id) as Record<string, unknown> | undefined;
+    const existing = (await customerDb.db.get('SELECT * FROM devices WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, user.id)) as Record<string, unknown> | undefined;
     if (!existing) return reply.code(404).send({ error: 'Device not found' });
 
     const schema = DeviceCreateSchema.partial().extend({ archived: z.boolean().optional() });
@@ -726,16 +805,12 @@ export function registerCustomerRoutes(
     const now = new Date().toISOString();
     const nextRev = Number(existing.revision) + 1;
 
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `UPDATE devices SET
           name = ?, category = ?, manufacturer = ?, model = ?, serial_or_tag = ?,
           os_name = ?, os_version = ?, specs_json = ?, notes = ?, purchase_date = ?,
           purchase_price = ?, currency = ?, archived = ?, revision = ?, updated_at = ?
-         WHERE id = ? AND user_id = ?`,
-      )
-      .run(
-        String(d.name ?? existing.name),
+         WHERE id = ? AND user_id = ?`, String(d.name ?? existing.name),
         String(d.category ?? existing.category),
         String(d.manufacturer ?? existing.manufacturer),
         String(d.model ?? existing.model),
@@ -751,26 +826,21 @@ export function registerCustomerRoutes(
         nextRev,
         now,
         id,
-        user.id,
-      );
-    customerDb.recordSyncChange(user.id, 'device', id, 'upsert', nextRev);
+        user.id,);
+    await customerDb.recordSyncChange(user.id, 'device', id, 'upsert', nextRev);
     return { ok: true, id, revision: nextRev, updatedAt: now };
   });
 
   app.delete('/api/v1/devices/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const user = req.customerUser!;
-    const existing = customerDb.db
-      .prepare('SELECT revision FROM devices WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, user.id) as { revision: number } | undefined;
+    const existing = (await customerDb.db.get('SELECT revision FROM devices WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, user.id)) as { revision: number } | undefined;
     if (!existing) return reply.code(404).send({ error: 'Device not found' });
 
     const now = new Date().toISOString();
     const nextRev = existing.revision + 1;
-    customerDb.db
-      .prepare('UPDATE devices SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ? AND user_id = ?')
-      .run(now, nextRev, now, id, user.id);
-    customerDb.recordSyncChange(user.id, 'device', id, 'delete', nextRev);
+    await customerDb.db.run('UPDATE devices SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ? AND user_id = ?', now, nextRev, now, id, user.id);
+    await customerDb.recordSyncChange(user.id, 'device', id, 'delete', nextRev);
     return { deleted: true };
   });
 
@@ -781,24 +851,20 @@ export function registerCustomerRoutes(
     return { tools: DIAGNOSTIC_TOOL_REGISTRY };
   });
 
-  const saveSnapshot = (
+  const saveSnapshot = async (
     userId: string,
     snapshot: DiagnosticResult,
     deviceId?: string | null,
     investigationId?: string | null,
   ) => {
     const now = new Date().toISOString();
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `INSERT INTO diagnostic_snapshots (
           id, user_id, device_id, investigation_id, tool_id, measurement_type,
           simulated_scenario_id, source, platform, os_version, summary,
           warnings_json, limitations_json, data_json, duration_ms, revision,
           collected_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      )
-      .run(
-        snapshot.id,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`, snapshot.id,
         userId,
         deviceId ?? null,
         investigationId ?? null,
@@ -814,9 +880,8 @@ export function registerCustomerRoutes(
         JSON.stringify(snapshot.data),
         snapshot.durationMs,
         snapshot.collectedAt,
-        now,
-      );
-    customerDb.recordSyncChange(userId, 'diagnostic_snapshot', snapshot.id, 'upsert', 1);
+        now,);
+    await customerDb.recordSyncChange(userId, 'diagnostic_snapshot', snapshot.id, 'upsert', 1);
   };
 
   app.post('/api/v1/diagnostics/run', { preHandler: requireCustomerAuth }, async (req, reply) => {
@@ -848,12 +913,12 @@ export function registerCustomerRoutes(
       const result = await executeValidatedDiagnosticTool(parsed.data.toolId, parsed.data.parameters, {
         explicitUserApproval: parsed.data.explicitUserApproval,
       });
-      saveSnapshot(req.customerUser!.id, result, parsed.data.deviceId, parsed.data.investigationId);
-      customerDb.recordAudit(req.customerUser!.id, 'diagnostic_tool_executed', 'diagnostic', result.id, {
+      await saveSnapshot(req.customerUser!.id, result, parsed.data.deviceId, parsed.data.investigationId);
+      await customerDb.recordAudit(req.customerUser!.id, 'diagnostic_tool_executed', 'diagnostic', result.id, {
         toolId: parsed.data.toolId,
         riskLevel: def.riskLevel,
       });
-      emitUserTelemetry(req.customerUser!, 'diagnostic_scan_run', req, {
+      await emitUserTelemetry(req.customerUser!, 'diagnostic_scan_run', req, {
         durationMs: result.durationMs,
         metadata: { toolId: parsed.data.toolId, warningCount: result.warnings.length },
       });
@@ -872,8 +937,8 @@ export function registerCustomerRoutes(
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    saveSnapshot(req.customerUser!.id, parsed.data.snapshot, parsed.data.deviceId, parsed.data.investigationId);
-    emitUserTelemetry(req.customerUser!, 'diagnostic_scan_run', req, {
+    await saveSnapshot(req.customerUser!.id, parsed.data.snapshot, parsed.data.deviceId, parsed.data.investigationId);
+    await emitUserTelemetry(req.customerUser!, 'diagnostic_scan_run', req, {
       platform: parsed.data.snapshot.platform,
       durationMs: parsed.data.snapshot.durationMs,
       metadata: { toolId: parsed.data.snapshot.toolId, clientIngested: true },
@@ -903,7 +968,7 @@ export function registerCustomerRoutes(
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const sim = buildSimulatedDiagnostic(parsed.data.scenarioId as SimulationScenarioId);
-    saveSnapshot(req.customerUser!.id, sim, parsed.data.deviceId, parsed.data.investigationId);
+    await saveSnapshot(req.customerUser!.id, sim, parsed.data.deviceId, parsed.data.investigationId);
     return reply.code(201).send({ snapshot: sim });
   });
 
@@ -911,12 +976,8 @@ export function registerCustomerRoutes(
     const { deviceId, limit } = req.query as { deviceId?: string; limit?: string };
     const max = Math.min(100, Math.max(1, Number(limit) || 30));
     const rows = deviceId
-      ? (customerDb.db
-          .prepare('SELECT * FROM diagnostic_snapshots WHERE user_id = ? AND device_id = ? ORDER BY collected_at DESC LIMIT ?')
-          .all(req.customerUser!.id, deviceId, max) as Array<Record<string, unknown>>)
-      : (customerDb.db
-          .prepare('SELECT * FROM diagnostic_snapshots WHERE user_id = ? ORDER BY collected_at DESC LIMIT ?')
-          .all(req.customerUser!.id, max) as Array<Record<string, unknown>>);
+      ? ((await customerDb.db.all('SELECT * FROM diagnostic_snapshots WHERE user_id = ? AND device_id = ? ORDER BY collected_at DESC LIMIT ?', req.customerUser!.id, deviceId, max)) as Array<Record<string, unknown>>)
+      : ((await customerDb.db.all('SELECT * FROM diagnostic_snapshots WHERE user_id = ? ORDER BY collected_at DESC LIMIT ?', req.customerUser!.id, max)) as Array<Record<string, unknown>>);
 
     return {
       snapshots: rows.map((r) => ({
@@ -942,12 +1003,10 @@ export function registerCustomerRoutes(
   // ==========================================================================
   // AI Repair Copilot — Structured Diagnostic Investigations
   // ==========================================================================
-  const loadSnapshotsByIds = (userId: string, ids: string[]): DiagnosticResult[] => {
+  const loadSnapshotsByIds = async (userId: string, ids: string[]): Promise<DiagnosticResult[]> => {
     const out: DiagnosticResult[] = [];
     for (const sid of ids) {
-      const r = customerDb.db
-        .prepare('SELECT * FROM diagnostic_snapshots WHERE id = ? AND user_id = ?')
-        .get(sid, userId) as Record<string, unknown> | undefined;
+      const r = (await customerDb.db.get('SELECT * FROM diagnostic_snapshots WHERE id = ? AND user_id = ?', sid, userId)) as Record<string, unknown> | undefined;
       if (r) {
         out.push({
           id: String(r.id),
@@ -969,14 +1028,10 @@ export function registerCustomerRoutes(
     return out;
   };
 
-  const incrementUsage = (userId: string, field: 'ai_messages' | 'image_analyses' | 'voice_interactions') => {
+  const incrementUsage = async (userId: string, field: 'ai_messages' | 'image_analyses' | 'voice_interactions') => {
     const ym = getCurrentYm();
-    customerDb.db
-      .prepare('INSERT OR IGNORE INTO usage_counters (user_id, period_ym) VALUES (?, ?)')
-      .run(userId, ym);
-    customerDb.db
-      .prepare(`UPDATE usage_counters SET ${field} = ${field} + 1 WHERE user_id = ? AND period_ym = ?`)
-      .run(userId, ym);
+    await customerDb.db.run('INSERT OR IGNORE INTO usage_counters (user_id, period_ym) VALUES (?, ?)', userId, ym);
+    await customerDb.db.run(`UPDATE usage_counters SET ${field} = ${field} + 1 WHERE user_id = ? AND period_ym = ?`, userId, ym);
   };
 
   const executeInvestigationTurn = async (params: {
@@ -991,23 +1046,17 @@ export function registerCustomerRoutes(
     imageFilename?: string;
   }) => {
     const { user, req, investigationId, messageText, inputModality, snapshotIds } = params;
-    const inv = customerDb.db
-      .prepare('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(investigationId, user.id) as Record<string, unknown>;
+    const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', investigationId, user.id)) as Record<string, unknown>;
 
     const deviceRow = inv.device_id
-      ? (customerDb.db
-          .prepare('SELECT * FROM devices WHERE id = ? AND user_id = ?')
-          .get(String(inv.device_id), user.id) as Record<string, unknown> | undefined)
+      ? ((await customerDb.db.get('SELECT * FROM devices WHERE id = ? AND user_id = ?', String(inv.device_id), user.id)) as Record<string, unknown> | undefined)
       : undefined;
 
-    const historyRows = customerDb.db
-      .prepare('SELECT role, content FROM investigation_messages WHERE investigation_id = ? ORDER BY created_at ASC')
-      .all(investigationId) as Array<{ role: string; content: string }>;
+    const historyRows = (await customerDb.db.all('SELECT role, content FROM investigation_messages WHERE investigation_id = ? ORDER BY created_at ASC', investigationId)) as Array<{ role: string; content: string }>;
 
     const existingEvidence = JSON.parse(String(inv.evidence_json || '[]')) as EvidenceItem[];
     const existingHypotheses = JSON.parse(String(inv.hypotheses_json || '[]')) as Hypothesis[];
-    const attachedSnapshots = loadSnapshotsByIds(user.id, snapshotIds);
+    const attachedSnapshots = await loadSnapshotsByIds(user.id, snapshotIds);
 
     // Optional uploaded image attachment validation & clarity check
     let imageAttachment: Parameters<typeof runCopilotTurn>[0]['imageAttachment'] = null;
@@ -1021,15 +1070,11 @@ export function registerCustomerRoutes(
         const meta = inspectImageBuffer(buf);
         const saved = saveUserAttachment(config.uploadsDir, user.id, fname, buf);
         const attId = crypto.randomUUID();
-        customerDb.db
-          .prepare(
+        await customerDb.db.run(
             `INSERT INTO media_attachments (
               id, user_id, device_id, investigation_id, filename, mime_type,
               size_bytes, storage_path, width, height, clarity_note, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            attId,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, attId,
             user.id,
             inv.device_id ? String(inv.device_id) : null,
             investigationId,
@@ -1040,24 +1085,20 @@ export function registerCustomerRoutes(
             meta.width,
             meta.height,
             meta.clarityNote,
-            new Date().toISOString(),
-          );
+            new Date().toISOString(),);
         imageAttachment = { filename: fname, mimeType: params.imageMimeType, base64Data: cleanB64, metadata: meta };
         storedAttachments.push({ id: attId, filename: fname, mimeType: params.imageMimeType, clarityNote: meta.clarityNote });
-        incrementUsage(user.id, 'image_analyses');
-        emitUserTelemetry(user, 'image_analysis_requested', req);
+        await incrementUsage(user.id, 'image_analyses');
+        await emitUserTelemetry(user, 'image_analysis_requested', req);
       }
     }
 
     const now = new Date().toISOString();
     const userMsgId = crypto.randomUUID();
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `INSERT INTO investigation_messages (
           id, investigation_id, user_id, role, content, input_modality, attachments_json, created_at
-        ) VALUES (?, ?, ?, 'user', ?, ?, ?, ?)`,
-      )
-      .run(userMsgId, investigationId, user.id, messageText, inputModality, JSON.stringify(storedAttachments), now);
+        ) VALUES (?, ?, ?, 'user', ?, ?, ?, ?)`, userMsgId, investigationId, user.id, messageText, inputModality, JSON.stringify(storedAttachments), now);
 
     // Search user's private technical documents for traceable citations
     const anonHash = createAnonymousUserHash(user.id, config.jwtSecret);
@@ -1115,15 +1156,11 @@ export function registerCustomerRoutes(
 
     const assistantMsgId = crypto.randomUUID();
     const replyTime = new Date().toISOString();
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `INSERT INTO investigation_messages (
           id, investigation_id, user_id, role, content, input_modality,
           citations_json, tool_calls_json, ai_provider, ai_model, created_at
-        ) VALUES (?, ?, ?, 'assistant', ?, 'text', ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        assistantMsgId,
+        ) VALUES (?, ?, ?, 'assistant', ?, 'text', ?, ?, ?, ?, ?)`, assistantMsgId,
         investigationId,
         user.id,
         turnOut.assistantReply,
@@ -1131,8 +1168,7 @@ export function registerCustomerRoutes(
         JSON.stringify(turnOut.proposedTools),
         turnOut.aiProvider,
         turnOut.aiModel,
-        replyTime,
-      );
+        replyTime,);
 
     const combinedEvidence = [...existingEvidence, ...turnOut.newEvidence].slice(-60);
     const existingSafety = JSON.parse(String(inv.safety_flags_json || '[]')) as Array<unknown>;
@@ -1141,8 +1177,7 @@ export function registerCustomerRoutes(
     const followupId: string | null = inv.baseline_snapshot_id && snapshotIds[0] ? snapshotIds[0] : (inv.followup_snapshot_id ? String(inv.followup_snapshot_id) : null);
     const nextRev = Number(inv.revision) + 1;
 
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `UPDATE investigations SET
           evidence_json = ?,
           hypotheses_json = ?,
@@ -1152,10 +1187,7 @@ export function registerCustomerRoutes(
           followup_snapshot_id = ?,
           revision = ?,
           updated_at = ?
-         WHERE id = ? AND user_id = ?`,
-      )
-      .run(
-        JSON.stringify(combinedEvidence),
+         WHERE id = ? AND user_id = ?`, JSON.stringify(combinedEvidence),
         JSON.stringify(turnOut.updatedHypotheses),
         JSON.stringify(turnOut.proposedTools),
         JSON.stringify(combinedSafety),
@@ -1164,16 +1196,15 @@ export function registerCustomerRoutes(
         nextRev,
         replyTime,
         investigationId,
-        user.id,
-      );
+        user.id,);
 
-    customerDb.recordSyncChange(user.id, 'investigation', investigationId, 'upsert', nextRev);
-    incrementUsage(user.id, 'ai_messages');
+    await customerDb.recordSyncChange(user.id, 'investigation', investigationId, 'upsert', nextRev);
+    await incrementUsage(user.id, 'ai_messages');
     if (inputModality === 'voice') {
-      incrementUsage(user.id, 'voice_interactions');
-      emitUserTelemetry(user, 'voice_interaction_used', req);
+      await incrementUsage(user.id, 'voice_interactions');
+      await emitUserTelemetry(user, 'voice_interaction_used', req);
     }
-    emitUserTelemetry(user, 'investigation_message_sent', req, {
+    await emitUserTelemetry(user, 'investigation_message_sent', req, {
       metadata: {
         modality: inputModality,
         safetyTriggered: turnOut.safetyTriggered,
@@ -1203,15 +1234,12 @@ export function registerCustomerRoutes(
   };
 
   app.get('/api/v1/investigations', { preHandler: requireCustomerAuth }, async (req) => {
-    const rows = customerDb.db
-      .prepare(
+    const rows = (await customerDb.db.all(
         `SELECT i.*, d.name AS device_name, d.category AS device_category
          FROM investigations i
          LEFT JOIN devices d ON d.id = i.device_id
          WHERE i.user_id = ? AND i.deleted_at IS NULL
-         ORDER BY i.updated_at DESC`,
-      )
-      .all(req.customerUser!.id) as Array<Record<string, unknown>>;
+         ORDER BY i.updated_at DESC`, req.customerUser!.id)) as Array<Record<string, unknown>>;
 
     return {
       investigations: rows.map((r) => ({
@@ -1252,16 +1280,13 @@ export function registerCustomerRoutes(
     const now = new Date().toISOString();
     const title = parsed.data.title || parsed.data.initialSymptom.slice(0, 72);
 
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `INSERT INTO investigations (
           id, user_id, device_id, title, initial_symptom,
           status, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?)`,
-      )
-      .run(id, user.id, parsed.data.deviceId ?? null, title, parsed.data.initialSymptom, now, now);
+        ) VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?)`, id, user.id, parsed.data.deviceId ?? null, title, parsed.data.initialSymptom, now, now);
 
-    emitUserTelemetry(user, 'investigation_started', req);
+    await emitUserTelemetry(user, 'investigation_started', req);
 
     const turnResult = await executeInvestigationTurn({
       user,
@@ -1289,14 +1314,10 @@ export function registerCustomerRoutes(
 
   app.get('/api/v1/investigations/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const inv = customerDb.db
-      .prepare('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id) as Record<string, unknown> | undefined;
+    const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id)) as Record<string, unknown> | undefined;
     if (!inv) return reply.code(404).send({ error: 'Investigation not found' });
 
-    const messages = customerDb.db
-      .prepare('SELECT * FROM investigation_messages WHERE investigation_id = ? ORDER BY created_at ASC')
-      .all(id) as Array<Record<string, unknown>>;
+    const messages = (await customerDb.db.all('SELECT * FROM investigation_messages WHERE investigation_id = ? ORDER BY created_at ASC', id)) as Array<Record<string, unknown>>;
 
     return {
       investigation: {
@@ -1334,9 +1355,7 @@ export function registerCustomerRoutes(
 
   app.post('/api/v1/investigations/:id/messages', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const inv = customerDb.db
-      .prepare('SELECT id FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id);
+    const inv = await customerDb.db.get('SELECT id FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id);
     if (!inv) return reply.code(404).send({ error: 'Investigation not found' });
 
     const schema = z.object({
@@ -1368,9 +1387,7 @@ export function registerCustomerRoutes(
   app.post('/api/v1/investigations/:id/measurements', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const user = req.customerUser!;
-    const inv = customerDb.db
-      .prepare('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, user.id) as Record<string, unknown> | undefined;
+    const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, user.id)) as Record<string, unknown> | undefined;
     if (!inv) return reply.code(404).send({ error: 'Investigation not found' });
 
     const schema = z.object({
@@ -1394,10 +1411,8 @@ export function registerCustomerRoutes(
     };
     ev.push(item);
     const nextRev = Number(inv.revision) + 1;
-    customerDb.db
-      .prepare('UPDATE investigations SET evidence_json = ?, revision = ?, updated_at = ? WHERE id = ?')
-      .run(JSON.stringify(ev), nextRev, new Date().toISOString(), id);
-    customerDb.recordSyncChange(user.id, 'investigation', id, 'upsert', nextRev);
+    await customerDb.db.run('UPDATE investigations SET evidence_json = ?, revision = ?, updated_at = ? WHERE id = ?', JSON.stringify(ev), nextRev, new Date().toISOString(), id);
+    await customerDb.recordSyncChange(user.id, 'investigation', id, 'upsert', nextRev);
 
     return reply.code(201).send({ measurement: item, evidence: ev });
   });
@@ -1406,9 +1421,7 @@ export function registerCustomerRoutes(
   app.post('/api/v1/investigations/:id/execute-tool', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const user = req.customerUser!;
-    const inv = customerDb.db
-      .prepare('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, user.id) as Record<string, unknown> | undefined;
+    const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, user.id)) as Record<string, unknown> | undefined;
     if (!inv) return reply.code(404).send({ error: 'Investigation not found' });
 
     const schema = z.object({
@@ -1431,16 +1444,14 @@ export function registerCustomerRoutes(
     const snap = await executeValidatedDiagnosticTool(parsed.data.toolId, parsed.data.parameters, {
       explicitUserApproval: parsed.data.explicitUserApproval,
     });
-    saveSnapshot(user.id, snap, inv.device_id ? String(inv.device_id) : null, id);
+    await saveSnapshot(user.id, snap, inv.device_id ? String(inv.device_id) : null, id);
 
     // Mark tool executed in pending_tools_json
     const pending = JSON.parse(String(inv.pending_tools_json || '[]')) as ProposedToolCall[];
     for (const t of pending) {
       if (t.toolId === parsed.data.toolId) t.status = 'executed';
     }
-    customerDb.db
-      .prepare('UPDATE investigations SET pending_tools_json = ? WHERE id = ?')
-      .run(JSON.stringify(pending), id);
+    await customerDb.db.run('UPDATE investigations SET pending_tools_json = ? WHERE id = ?', JSON.stringify(pending), id);
 
     const turnOut = await executeInvestigationTurn({
       user,
@@ -1458,9 +1469,7 @@ export function registerCustomerRoutes(
   app.post('/api/v1/investigations/:id/verify', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const user = req.customerUser!;
-    const inv = customerDb.db
-      .prepare('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, user.id) as Record<string, unknown> | undefined;
+    const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, user.id)) as Record<string, unknown> | undefined;
     if (!inv) return reply.code(404).send({ error: 'Investigation not found' });
 
     const schema = z.object({
@@ -1473,8 +1482,8 @@ export function registerCustomerRoutes(
 
     const baseId = parsed.data.baselineSnapshotId || (inv.baseline_snapshot_id ? String(inv.baseline_snapshot_id) : undefined);
     const followId = parsed.data.followupSnapshotId || (inv.followup_snapshot_id ? String(inv.followup_snapshot_id) : undefined);
-    const baseline = baseId ? loadSnapshotsByIds(user.id, [baseId])[0] : null;
-    const followup = followId ? loadSnapshotsByIds(user.id, [followId])[0] : null;
+    const baseline = baseId ? (await loadSnapshotsByIds(user.id, [baseId]))[0] : null;
+    const followup = followId ? (await loadSnapshotsByIds(user.id, [followId]))[0] : null;
     const safetyFlags = JSON.parse(String(inv.safety_flags_json || '[]')) as Array<{ severity: string }>;
     const safetyRequiresPro = safetyFlags.some((f) => f.severity === 'critical_stop');
 
@@ -1488,8 +1497,7 @@ export function registerCustomerRoutes(
     const nextStatus = report.outcome === 'verified_resolved' ? 'resolved' : 'active';
     const nextRev = Number(inv.revision) + 1;
     const now = new Date().toISOString();
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `UPDATE investigations SET
           status = ?,
           verification_outcome = ?,
@@ -1497,12 +1505,10 @@ export function registerCustomerRoutes(
           followup_snapshot_id = ?,
           revision = ?,
           updated_at = ?
-         WHERE id = ? AND user_id = ?`,
-      )
-      .run(nextStatus, report.outcome, JSON.stringify(report), followId ?? null, nextRev, now, id, user.id);
+         WHERE id = ? AND user_id = ?`, nextStatus, report.outcome, JSON.stringify(report), followId ?? null, nextRev, now, id, user.id);
 
-    customerDb.recordSyncChange(user.id, 'investigation', id, 'upsert', nextRev);
-    emitUserTelemetry(user, 'investigation_completed', req, {
+    await customerDb.recordSyncChange(user.id, 'investigation', id, 'upsert', nextRev);
+    await emitUserTelemetry(user, 'investigation_completed', req, {
       metadata: { outcome: report.outcome },
     });
 
@@ -1512,9 +1518,7 @@ export function registerCustomerRoutes(
   app.get('/api/v1/investigations/:id/report', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const user = req.customerUser!;
-    const inv = customerDb.db
-      .prepare('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, user.id) as Record<string, unknown> | undefined;
+    const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, user.id)) as Record<string, unknown> | undefined;
     if (!inv) return reply.code(404).send({ error: 'Investigation not found' });
 
     const evidence = JSON.parse(String(inv.evidence_json || '[]')) as EvidenceItem[];
@@ -1542,7 +1546,7 @@ export function registerCustomerRoutes(
         : []),
     ].join('\n');
 
-    emitUserTelemetry(user, 'diagnostic_report_exported', req);
+    await emitUserTelemetry(user, 'diagnostic_report_exported', req);
     return {
       reportId: crypto.randomUUID(),
       investigationId: id,
@@ -1553,16 +1557,12 @@ export function registerCustomerRoutes(
 
   app.delete('/api/v1/investigations/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const existing = customerDb.db
-      .prepare('SELECT revision FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id) as { revision: number } | undefined;
+    const existing = (await customerDb.db.get('SELECT revision FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id)) as { revision: number } | undefined;
     if (!existing) return reply.code(404).send({ error: 'Investigation not found' });
 
     const now = new Date().toISOString();
-    customerDb.db
-      .prepare('UPDATE investigations SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ?')
-      .run(now, existing.revision + 1, now, id);
-    customerDb.recordSyncChange(req.customerUser!.id, 'investigation', id, 'delete', existing.revision + 1);
+    await customerDb.db.run('UPDATE investigations SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ?', now, existing.revision + 1, now, id);
+    await customerDb.recordSyncChange(req.customerUser!.id, 'investigation', id, 'delete', existing.revision + 1);
     return { deleted: true };
   });
 
@@ -1570,9 +1570,7 @@ export function registerCustomerRoutes(
   // Knowledge Base & Technical Documents (PDF / MD / TXT + FTS5 RAG)
   // ==========================================================================
   app.get('/api/v1/documents', { preHandler: requireCustomerAuth }, async (req) => {
-    const rows = customerDb.db
-      .prepare('SELECT * FROM documents WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC')
-      .all(req.customerUser!.id) as Array<Record<string, unknown>>;
+    const rows = (await customerDb.db.all('SELECT * FROM documents WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC', req.customerUser!.id)) as Array<Record<string, unknown>>;
     return {
       documents: rows.map((r) => ({
         id: r.id,
@@ -1657,7 +1655,7 @@ export function registerCustomerRoutes(
       docVersion,
     });
 
-    emitUserTelemetry(user, 'document_uploaded', req, {
+    await emitUserTelemetry(user, 'document_uploaded', req, {
       metadata: { kind: check.detectedKind, pages: res.pageCount, chunks: res.chunkCount },
     });
 
@@ -1681,7 +1679,7 @@ export function registerCustomerRoutes(
 
   app.delete('/api/v1/documents/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const ok = deleteUserDocument(customerDb, req.customerUser!.id, id);
+    const ok = await deleteUserDocument(customerDb, req.customerUser!.id, id);
     if (!ok) return reply.code(404).send({ error: 'Document not found' });
     return { deleted: true };
   });
@@ -1690,17 +1688,14 @@ export function registerCustomerRoutes(
   // Personal Repair Cases, Measurements, Expenses & Reports
   // ==========================================================================
   app.get('/api/v1/cases', { preHandler: requireCustomerAuth }, async (req) => {
-    const rows = customerDb.db
-      .prepare(
+    const rows = (await customerDb.db.all(
         `SELECT rc.*, d.name AS device_name,
           (SELECT COALESCE(SUM(amount), 0) FROM repair_expenses re WHERE re.repair_case_id = rc.id) AS total_expense,
           (SELECT COUNT(*) FROM repair_case_entries rce WHERE rce.repair_case_id = rc.id) AS entry_count
          FROM repair_cases rc
          LEFT JOIN devices d ON d.id = rc.device_id
          WHERE rc.user_id = ? AND rc.deleted_at IS NULL
-         ORDER BY rc.updated_at DESC`,
-      )
-      .all(req.customerUser!.id) as Array<Record<string, unknown>>;
+         ORDER BY rc.updated_at DESC`, req.customerUser!.id)) as Array<Record<string, unknown>>;
 
     return {
       cases: rows.map((r) => ({
@@ -1729,32 +1724,23 @@ export function registerCustomerRoutes(
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const d = parsed.data;
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `INSERT INTO repair_cases (
           id, user_id, device_id, investigation_id, title, symptom_summary,
           priority, status, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-      )
-      .run(id, req.customerUser!.id, d.deviceId ?? null, d.investigationId ?? null, d.title, d.symptomSummary, d.priority, d.status, now, now);
-    customerDb.recordSyncChange(req.customerUser!.id, 'repair_case', id, 'upsert', 1);
-    emitUserTelemetry(req.customerUser!, 'repair_case_created', req);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`, id, req.customerUser!.id, d.deviceId ?? null, d.investigationId ?? null, d.title, d.symptomSummary, d.priority, d.status, now, now);
+    await customerDb.recordSyncChange(req.customerUser!.id, 'repair_case', id, 'upsert', 1);
+    await emitUserTelemetry(req.customerUser!, 'repair_case_created', req);
     return reply.code(201).send({ repairCase: { id, ...d, revision: 1, createdAt: now, updatedAt: now } });
   });
 
   app.get('/api/v1/cases/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const rc = customerDb.db
-      .prepare('SELECT * FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id) as Record<string, unknown> | undefined;
+    const rc = (await customerDb.db.get('SELECT * FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id)) as Record<string, unknown> | undefined;
     if (!rc) return reply.code(404).send({ error: 'Repair case not found' });
 
-    const entries = customerDb.db
-      .prepare('SELECT * FROM repair_case_entries WHERE repair_case_id = ? ORDER BY created_at DESC')
-      .all(id);
-    const expenses = customerDb.db
-      .prepare('SELECT * FROM repair_expenses WHERE repair_case_id = ? ORDER BY created_at DESC')
-      .all(id);
+    const entries = await customerDb.db.all('SELECT * FROM repair_case_entries WHERE repair_case_id = ? ORDER BY created_at DESC', id);
+    const expenses = await customerDb.db.all('SELECT * FROM repair_expenses WHERE repair_case_id = ? ORDER BY created_at DESC', id);
 
     return {
       repairCase: {
@@ -1778,9 +1764,7 @@ export function registerCustomerRoutes(
 
   app.patch('/api/v1/cases/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const rc = customerDb.db
-      .prepare('SELECT * FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id) as Record<string, unknown> | undefined;
+    const rc = (await customerDb.db.get('SELECT * FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id)) as Record<string, unknown> | undefined;
     if (!rc) return reply.code(404).send({ error: 'Repair case not found' });
 
     const schema = z.object({
@@ -1797,15 +1781,11 @@ export function registerCustomerRoutes(
     const now = new Date().toISOString();
     const nextRev = Number(rc.revision) + 1;
 
-    customerDb.db
-      .prepare(
+    await customerDb.db.run(
         `UPDATE repair_cases SET
           title = ?, symptom_summary = ?, diagnosis_summary = ?, resolution_notes = ?,
           priority = ?, status = ?, revision = ?, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(
-        String(d.title ?? rc.title),
+         WHERE id = ?`, String(d.title ?? rc.title),
         String(d.symptomSummary ?? rc.symptom_summary ?? ''),
         String(d.diagnosisSummary ?? rc.diagnosis_summary ?? ''),
         String(d.resolutionNotes ?? rc.resolution_notes ?? ''),
@@ -1813,17 +1793,14 @@ export function registerCustomerRoutes(
         String(d.status ?? rc.status ?? 'open'),
         nextRev,
         now,
-        id,
-      );
-    customerDb.recordSyncChange(req.customerUser!.id, 'repair_case', id, 'upsert', nextRev);
+        id,);
+    await customerDb.recordSyncChange(req.customerUser!.id, 'repair_case', id, 'upsert', nextRev);
     return { ok: true, revision: nextRev };
   });
 
   app.post('/api/v1/cases/:id/entries', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const rc = customerDb.db
-      .prepare('SELECT id FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id);
+    const rc = await customerDb.db.get('SELECT id FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id);
     if (!rc) return reply.code(404).send({ error: 'Repair case not found' });
 
     const schema = z.object({
@@ -1837,19 +1814,14 @@ export function registerCustomerRoutes(
 
     const entryId = crypto.randomUUID();
     const now = new Date().toISOString();
-    customerDb.db
-      .prepare(
-        'INSERT INTO repair_case_entries (id, repair_case_id, user_id, entry_type, title, body, measurement_value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(entryId, id, req.customerUser!.id, parsed.data.entryType, parsed.data.title, parsed.data.body, parsed.data.measurementValue ?? null, now);
+    await customerDb.db.run(
+        'INSERT INTO repair_case_entries (id, repair_case_id, user_id, entry_type, title, body, measurement_value, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', entryId, id, req.customerUser!.id, parsed.data.entryType, parsed.data.title, parsed.data.body, parsed.data.measurementValue ?? null, now);
     return reply.code(201).send({ entry: { id: entryId, ...parsed.data, createdAt: now } });
   });
 
   app.post('/api/v1/cases/:id/expenses', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const rc = customerDb.db
-      .prepare('SELECT id FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id);
+    const rc = await customerDb.db.get('SELECT id FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id);
     if (!rc) return reply.code(404).send({ error: 'Repair case not found' });
 
     const parsed = RepairExpenseSchema.safeParse(req.body);
@@ -1857,25 +1829,18 @@ export function registerCustomerRoutes(
     const expId = crypto.randomUUID();
     const now = new Date().toISOString();
     const d = parsed.data;
-    customerDb.db
-      .prepare(
-        'INSERT INTO repair_expenses (id, repair_case_id, user_id, item_name, category, amount, currency, vendor, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      )
-      .run(expId, id, req.customerUser!.id, d.itemName, d.category, d.amount, d.currency, d.vendor ?? null, d.notes ?? null, now);
+    await customerDb.db.run(
+        'INSERT INTO repair_expenses (id, repair_case_id, user_id, item_name, category, amount, currency, vendor, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', expId, id, req.customerUser!.id, d.itemName, d.category, d.amount, d.currency, d.vendor ?? null, d.notes ?? null, now);
     return reply.code(201).send({ expense: { id: expId, ...d, createdAt: now } });
   });
 
   app.delete('/api/v1/cases/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const rc = customerDb.db
-      .prepare('SELECT revision FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-      .get(id, req.customerUser!.id) as { revision: number } | undefined;
+    const rc = (await customerDb.db.get('SELECT revision FROM repair_cases WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id)) as { revision: number } | undefined;
     if (!rc) return reply.code(404).send({ error: 'Repair case not found' });
     const now = new Date().toISOString();
-    customerDb.db
-      .prepare('UPDATE repair_cases SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ?')
-      .run(now, rc.revision + 1, now, id);
-    customerDb.recordSyncChange(req.customerUser!.id, 'repair_case', id, 'delete', rc.revision + 1);
+    await customerDb.db.run('UPDATE repair_cases SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ?', now, rc.revision + 1, now, id);
+    await customerDb.recordSyncChange(req.customerUser!.id, 'repair_case', id, 'delete', rc.revision + 1);
     return { deleted: true };
   });
 
@@ -1888,9 +1853,7 @@ export function registerCustomerRoutes(
       return { syncEnabled: false, latestSeq: 0, changes: [] };
     }
     const sinceSeq = Math.max(0, Number((req.query as { sinceSeq?: string }).sinceSeq) || 0);
-    const logs = customerDb.db
-      .prepare('SELECT * FROM sync_log WHERE user_id = ? AND seq > ? ORDER BY seq ASC LIMIT 200')
-      .all(user.id, sinceSeq) as Array<{
+    const logs = (await customerDb.db.all('SELECT * FROM sync_log WHERE user_id = ? AND seq > ? ORDER BY seq ASC LIMIT 200', user.id, sinceSeq)) as Array<{
       seq: number;
       entity_type: string;
       entity_id: string;
@@ -1899,9 +1862,7 @@ export function registerCustomerRoutes(
       updated_at: string;
     }>;
 
-    const latestRow = customerDb.db
-      .prepare('SELECT COALESCE(MAX(seq), 0) AS max_seq FROM sync_log WHERE user_id = ?')
-      .get(user.id) as { max_seq: number };
+    const latestRow = (await customerDb.db.get('SELECT COALESCE(MAX(seq), 0) AS max_seq FROM sync_log WHERE user_id = ?', user.id)) as { max_seq: number };
 
     const tableMap: Record<string, string> = {
       device: 'devices',
@@ -1911,10 +1872,10 @@ export function registerCustomerRoutes(
       diagnostic_snapshot: 'diagnostic_snapshots',
     };
 
-    const changes = logs.map((l) => {
+    const changes = await Promise.all(logs.map(async (l) => {
       const tbl = tableMap[l.entity_type];
       const record = tbl
-        ? customerDb.db.prepare(`SELECT * FROM ${tbl} WHERE id = ? AND user_id = ?`).get(l.entity_id, user.id)
+        ? await customerDb.db.get(`SELECT * FROM ${tbl} WHERE id = ? AND user_id = ?`, l.entity_id, user.id)
         : null;
       return {
         seq: l.seq,
@@ -1925,9 +1886,9 @@ export function registerCustomerRoutes(
         updatedAt: l.updated_at,
         record: record ?? null,
       };
-    });
+    }));
 
-    emitUserTelemetry(user, 'sync_completed', req, { metadata: { direction: 'pull', count: changes.length } });
+    await emitUserTelemetry(user, 'sync_completed', req, { metadata: { direction: 'pull', count: changes.length } });
     return { syncEnabled: true, latestSeq: latestRow.max_seq, changes };
   });
 
@@ -1953,9 +1914,7 @@ export function registerCustomerRoutes(
     const now = new Date().toISOString();
     for (const m of parsed.data.mutations) {
       if (m.entityType === 'device') {
-        const existing = customerDb.db
-          .prepare('SELECT * FROM devices WHERE id = ? AND user_id = ?')
-          .get(m.entityId, user.id) as Record<string, unknown> | undefined;
+        const existing = (await customerDb.db.get('SELECT * FROM devices WHERE id = ? AND user_id = ?', m.entityId, user.id)) as Record<string, unknown> | undefined;
 
         if (existing && Number(existing.revision) > m.baseRevision) {
           conflicts.push({
@@ -1971,40 +1930,29 @@ export function registerCustomerRoutes(
 
         if (m.operation === 'delete' && existing) {
           const nextRev = Number(existing.revision) + 1;
-          customerDb.db
-            .prepare('UPDATE devices SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ?')
-            .run(now, nextRev, now, m.entityId);
-          customerDb.recordSyncChange(user.id, 'device', m.entityId, 'delete', nextRev);
+          await customerDb.db.run('UPDATE devices SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ?', now, nextRev, now, m.entityId);
+          await customerDb.recordSyncChange(user.id, 'device', m.entityId, 'delete', nextRev);
           applied.push({ clientMutationId: m.clientMutationId, entityId: m.entityId, newRevision: nextRev });
         } else if (m.operation === 'upsert') {
           const p = m.payload;
           if (existing) {
             const nextRev = Number(existing.revision) + 1;
-            customerDb.db
-              .prepare(
-                'UPDATE devices SET name = ?, notes = ?, model = ?, manufacturer = ?, revision = ?, updated_at = ? WHERE id = ?',
-              )
-              .run(
-                String(p.name ?? existing.name),
+            await customerDb.db.run(
+                'UPDATE devices SET name = ?, notes = ?, model = ?, manufacturer = ?, revision = ?, updated_at = ? WHERE id = ?', String(p.name ?? existing.name),
                 String(p.notes ?? existing.notes),
                 String(p.model ?? existing.model),
                 String(p.manufacturer ?? existing.manufacturer),
                 nextRev,
                 now,
-                m.entityId,
-              );
-            customerDb.recordSyncChange(user.id, 'device', m.entityId, 'upsert', nextRev);
+                m.entityId,);
+            await customerDb.recordSyncChange(user.id, 'device', m.entityId, 'upsert', nextRev);
             applied.push({ clientMutationId: m.clientMutationId, entityId: m.entityId, newRevision: nextRev });
           } else {
-            customerDb.db
-              .prepare(
+            await customerDb.db.run(
                 `INSERT INTO devices (
                   id, user_id, name, category, manufacturer, model, notes, specs_json,
                   archived, revision, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
-              )
-              .run(
-                m.entityId,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`, m.entityId,
                 user.id,
                 String(p.name || 'Synced Device'),
                 String(p.category || 'other'),
@@ -2013,16 +1961,13 @@ export function registerCustomerRoutes(
                 String(p.notes || ''),
                 JSON.stringify(p.specs || {}),
                 now,
-                now,
-              );
-            customerDb.recordSyncChange(user.id, 'device', m.entityId, 'upsert', 1);
+                now,);
+            await customerDb.recordSyncChange(user.id, 'device', m.entityId, 'upsert', 1);
             applied.push({ clientMutationId: m.clientMutationId, entityId: m.entityId, newRevision: 1 });
           }
         }
       } else if (m.entityType === 'repair_case') {
-        const existing = customerDb.db
-          .prepare('SELECT * FROM repair_cases WHERE id = ? AND user_id = ?')
-          .get(m.entityId, user.id) as Record<string, unknown> | undefined;
+        const existing = (await customerDb.db.get('SELECT * FROM repair_cases WHERE id = ? AND user_id = ?', m.entityId, user.id)) as Record<string, unknown> | undefined;
         if (existing && Number(existing.revision) > m.baseRevision) {
           conflicts.push({
             clientMutationId: m.clientMutationId,
@@ -2037,25 +1982,17 @@ export function registerCustomerRoutes(
         const p = m.payload;
         if (existing) {
           const nextRev = Number(existing.revision) + 1;
-          customerDb.db
-            .prepare('UPDATE repair_cases SET title = ?, status = ?, resolution_notes = ?, revision = ?, updated_at = ? WHERE id = ?')
-            .run(
-              String(p.title ?? existing.title),
+          await customerDb.db.run('UPDATE repair_cases SET title = ?, status = ?, resolution_notes = ?, revision = ?, updated_at = ? WHERE id = ?', String(p.title ?? existing.title),
               String(p.status ?? existing.status),
               String(p.resolutionNotes ?? existing.resolution_notes),
               nextRev,
               now,
-              m.entityId,
-            );
-          customerDb.recordSyncChange(user.id, 'repair_case', m.entityId, 'upsert', nextRev);
+              m.entityId,);
+          await customerDb.recordSyncChange(user.id, 'repair_case', m.entityId, 'upsert', nextRev);
           applied.push({ clientMutationId: m.clientMutationId, entityId: m.entityId, newRevision: nextRev });
         } else {
-          customerDb.db
-            .prepare(
-              'INSERT INTO repair_cases (id, user_id, device_id, title, symptom_summary, priority, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)',
-            )
-            .run(
-              m.entityId,
+          await customerDb.db.run(
+              'INSERT INTO repair_cases (id, user_id, device_id, title, symptom_summary, priority, status, revision, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)', m.entityId,
               user.id,
               p.deviceId ? String(p.deviceId) : null,
               String(p.title || 'Synced Repair Case'),
@@ -2063,15 +2000,14 @@ export function registerCustomerRoutes(
               String(p.priority || 'medium'),
               String(p.status || 'open'),
               now,
-              now,
-            );
-          customerDb.recordSyncChange(user.id, 'repair_case', m.entityId, 'upsert', 1);
+              now,);
+          await customerDb.recordSyncChange(user.id, 'repair_case', m.entityId, 'upsert', 1);
           applied.push({ clientMutationId: m.clientMutationId, entityId: m.entityId, newRevision: 1 });
         }
       }
     }
 
-    emitUserTelemetry(user, conflicts.length > 0 ? 'sync_failed' : 'sync_completed', req, {
+    await emitUserTelemetry(user, conflicts.length > 0 ? 'sync_failed' : 'sync_completed', req, {
       success: conflicts.length === 0,
       metadata: { direction: 'push', applied: applied.length, conflicts: conflicts.length },
     });
@@ -2096,15 +2032,11 @@ export function registerCustomerRoutes(
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
 
     const id = crypto.randomUUID();
-    ownerDb.db
-      .prepare(
+    await ownerDb.db.run(
         `INSERT INTO user_feedback (
           id, category, rating, title, message, platform, app_version,
           non_sensitive_error_code, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`,
-      )
-      .run(
-        id,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`, id,
         parsed.data.category,
         parsed.data.rating ?? null,
         parsed.data.title,
@@ -2112,9 +2044,8 @@ export function registerCustomerRoutes(
         parsed.data.platform,
         parsed.data.appVersion,
         parsed.data.nonSensitiveErrorCode ?? null,
-        new Date().toISOString(),
-      );
-    emitUserTelemetry(req.customerUser!, 'feedback_submitted', req, {
+        new Date().toISOString(),);
+    await emitUserTelemetry(req.customerUser!, 'feedback_submitted', req, {
       metadata: { category: parsed.data.category },
     });
     return reply.code(201).send({ feedbackId: id, submitted: true });
@@ -2134,23 +2065,18 @@ export function registerCustomerRoutes(
     }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    ownerDb.db
-      .prepare(
+    await ownerDb.db.run(
         `INSERT INTO opt_in_support_reports (
           id, consent_confirmed, consent_timestamp, platform, app_version,
           summary, attached_diagnostics_json, status, created_at
-        ) VALUES (?, 1, ?, ?, ?, ?, ?, 'open', ?)`,
-      )
-      .run(
-        id,
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, 'open', ?)`, id,
         now,
         parsed.data.platform,
         parsed.data.appVersion,
         parsed.data.summary,
         JSON.stringify(parsed.data.selectedDiagnosticSummary),
-        now,
-      );
-    customerDb.recordAudit(req.customerUser!.id, 'support_report_authorized', 'support', id);
+        now,);
+    await customerDb.recordAudit(req.customerUser!.id, 'support_report_authorized', 'support', id);
     return reply.code(201).send({ reportId: id, authorized: true });
   });
 }

@@ -1,15 +1,11 @@
-# Render Blueprint — CoreSense v1.0 Managed Container Deployment
+# Render Blueprint — CoreSense v1.0 Free Tier + Supabase Deployment
 services:
   - type: web
     name: coresense-api
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: free
     healthCheckPath: /api/v1/health
-    disk:
-      name: coresense-data
-      mountPath: /app/data
-      sizeGB: 10
     envVars:
       - key: NODE_ENV
         value: production
@@ -17,8 +13,12 @@ services:
         value: 0.0.0.0
       - key: PORT
         value: "4000"
-      - key: DATA_DIR
-        value: /app/data
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: OWNER_JWT_SECRET
@@ -31,8 +31,6 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: STRIPE_SECRET_KEY
-        sync: false
       - key: CORS_ORIGINS
         sync: false
 
@@ -43,6 +41,10 @@ services:
     staticPublishPath: apps/mobile/dist
     envVars:
       - key: VITE_API_URL
+        sync: false
+      - key: VITE_SUPABASE_URL
+        sync: false
+      - key: VITE_SUPABASE_ANON_KEY
         sync: false
 
   - type: web

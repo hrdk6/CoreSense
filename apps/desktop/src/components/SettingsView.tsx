@@ -22,6 +22,7 @@ import {
   setAuthToken,
   setSyncSeq,
 } from '../api';
+import { resetSupabaseClientCache } from '../supabase';
 
 export interface AccountSnapshot {
   user: {
@@ -107,6 +108,7 @@ export const SettingsView: React.FC<{
     const cleaned = serverUrlInput.trim().replace(/\/$/, '');
     if (!cleaned) return;
     setApiBaseUrl(cleaned);
+    resetSupabaseClientCache();
     try {
       const [h, rel] = await Promise.all([
         apiRequest<{ status: string; version: string }>('/api/v1/health', { skipAuth: true }),

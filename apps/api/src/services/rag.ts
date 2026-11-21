@@ -139,7 +139,7 @@ async function computeEmbeddingIfConfigured(
       contents: text.slice(0, 4000),
     });
     const values = res.embeddings?.[0]?.values ?? null;
-    ownerDb.recordAiUsage({
+    await ownerDb.recordAiUsage({
       anonymousUserHash,
       provider: 'gemini',
       model: config.geminiEmbeddingModel,
@@ -153,7 +153,7 @@ async function computeEmbeddingIfConfigured(
     });
     return values ?? null;
   } catch (err) {
-    ownerDb.recordAiUsage({
+    await ownerDb.recordAiUsage({
       anonymousUserHash,
       provider: 'gemini',
       model: config.geminiEmbeddingModel,
@@ -213,37 +213,24 @@ export async function ingestTechnicalDocument(params: {
       ? `Indexed ${chunks.length} section chunk(s) across ${pages.length} page(s). Key sections: ${Array.from(new Set(chunks.map((c) => c.sectionHeading))).slice(0, 4).join(', ')}.`
       : 'Document stored, but no extractable text was found (may be a scanned image-only PDF).';
 
-  customerDb.db
-    .prepare(
-      `INSERT INTO documents (
-        id, user_id, device_id, title, filename, mime_type, file_size_bytes,
-        page_count, doc_version, summary, chunk_count, status, revision, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', 1, ?, ?)`,
-    )
-    .run(
-      docId,
-      userId,
-      deviceId ?? null,
-      title,
-      filename,
-      mimeType,
-      buffer.length,
-      pages.length,
-      params.docVersion || '1.0',
-      summary,
-      chunks.length,
-      now,
-      now,
-    );
-
-  const insertChunk = customerDb.db.prepare(
-    `INSERT INTO document_chunks (
-      id, document_id, user_id, chunk_index, page_number, section_heading,
-      has_table, has_command_block, content, embedding_json, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  );
-  const insertFts = customerDb.db.prepare(
-    'INSERT INTO document_chunks_fts (chunk_id, document_id, user_id, title, section_heading, content) VALUES (?, ?, ?, ?, ?, ?)',
+  await customerDb.db.run(
+    `INSERT INTO documents (
+      id, user_id, device_id, title, filename, mime_type, file_size_bytes,
+      page_count, doc_version, summary, chunk_count, status, revision, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', 1, ?, ?)`,
+    docId,
+    userId,
+    deviceId ?? null,
+    title,
+    filename,
+    mimeType,
+    buffer.length,
+    pages.length,
+    params.docVersion || '1.0',
+    summary,
+    chunks.length,
+    now,
+    now,
   );
 
   // Embed up to first 20 chunks when Gemini API is active so uploads remain fast
@@ -258,7 +245,11 @@ export async function ingestTechnicalDocument(params: {
             anonymousUserHash,
           )
         : null;
-    insertChunk.run(
+    await customerDb.db.run(
+      `INSERT INTO document_chunks (
+        id, document_id, user_id, chunk_index, page_number, section_heading,
+        has_table, has_command_block, content, embedding_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       chunkId,
       docId,
       userId,
@@ -271,11 +262,21 @@ export async function ingestTechnicalDocument(params: {
       embedding ? JSON.stringify(embedding) : null,
       now,
     );
-    insertFts.run(chunkId, docId, userId, title, ch.sectionHeading, ch.content);
+    if (customerDb.db.dialect === 'sqlite') {
+      await customerDb.db.run(
+        'INSERT INTO document_chunks_fts (chunk_id, document_id, user_id, title, section_heading, content) VALUES (?, ?, ?, ?, ?, ?)',
+        chunkId,
+        docId,
+        userId,
+        title,
+        ch.sectionHeading,
+        ch.content,
+      );
+    }
   }
 
-  customerDb.recordSyncChange(userId, 'document', docId, 'upsert', 1);
-  customerDb.recordAudit(userId, 'document_uploaded', 'document', docId, {
+  await customerDb.recordSyncChange(userId, 'document', docId, 'upsert', 1);
+  await customerDb.recordAudit(userId, 'document_uploaded', 'document', docId, {
     pageCount: pages.length,
     chunkCount: chunks.length,
   });
@@ -283,19 +284,17 @@ export async function ingestTechnicalDocument(params: {
   return { documentId: docId, pageCount: pages.length, chunkCount: chunks.length, summary };
 }
 
-function buildSafeFtsQuery(rawQuery: string): string {
+function extractQueryTokens(rawQuery: string): string[] {
   const stopWords = new Set([
     'the', 'and', 'for', 'with', 'that', 'this', 'from', 'have', 'what', 'when',
     'where', 'does', 'your', 'about', 'into', 'why', 'how', 'can', 'not', 'are', 'was',
   ]);
-  const tokens = rawQuery
+  return rawQuery
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, ' ')
     .split(/\s+/)
     .filter((t) => t.length >= 2 && !stopWords.has(t))
     .slice(0, 12);
-  if (tokens.length === 0) return '';
-  return tokens.map((t) => `"${t}"`).join(' OR ');
 }
 
 export async function searchUserKnowledgeBase(params: {
@@ -309,11 +308,58 @@ export async function searchUserKnowledgeBase(params: {
   limit?: number;
 }): Promise<RetrievedCitation[]> {
   const { customerDb, ownerDb, config, userId, anonymousUserHash, query, limit = 5 } = params;
-  const ftsQuery = buildSafeFtsQuery(query);
-  if (!ftsQuery) return [];
+  const tokens = extractQueryTokens(query);
+  if (tokens.length === 0) return [];
 
-  const rows = customerDb.db
-    .prepare(
+  type SearchRow = {
+    chunk_id: string;
+    document_id: string;
+    document_title: string;
+    doc_version: string;
+    page_number: number;
+    section_heading: string;
+    has_table: number;
+    has_command_block: number;
+    content: string;
+    embedding_json: string | null;
+    bm25_rank: number;
+  };
+
+  let rows: SearchRow[];
+  if (customerDb.db.dialect === 'postgres') {
+    const pgTsQuery = tokens.map((t) => t.replace(/[^a-z0-9]/g, '')).filter(Boolean).join(' | ');
+    if (!pgTsQuery) return [];
+    rows = await customerDb.db.all<SearchRow>(
+      `SELECT
+        dc.id AS chunk_id,
+        dc.document_id,
+        d.title AS document_title,
+        d.doc_version,
+        dc.page_number,
+        dc.section_heading,
+        dc.has_table,
+        dc.has_command_block,
+        dc.content,
+        dc.embedding_json,
+        -ts_rank(
+          to_tsvector('english', d.title || ' ' || dc.section_heading || ' ' || dc.content),
+          to_tsquery('english', ?)
+        ) AS bm25_rank
+      FROM document_chunks dc
+      JOIN documents d ON d.id = dc.document_id
+      WHERE to_tsvector('english', d.title || ' ' || dc.section_heading || ' ' || dc.content) @@ to_tsquery('english', ?)
+        AND dc.user_id = ?
+        AND d.deleted_at IS NULL
+      ORDER BY bm25_rank ASC
+      LIMIT ?`,
+      pgTsQuery,
+      pgTsQuery,
+      userId,
+      limit * 3,
+    );
+  } else {
+    const ftsQuery = tokens.map((t) => `"${t}"`).join(' OR ');
+    rows = await customerDb.db.all<SearchRow>(
       `SELECT
         dc.id AS chunk_id,
         dc.document_id,
@@ -334,20 +380,11 @@ export async function searchUserKnowledgeBase(params: {
         AND d.deleted_at IS NULL
       ORDER BY bm25_rank ASC
       LIMIT ?`,
-    )
-    .all(ftsQuery, userId, limit * 3) as Array<{
-    chunk_id: string;
-    document_id: string;
-    document_title: string;
-    doc_version: string;
-    page_number: number;
-    section_heading: string;
-    has_table: number;
-    has_command_block: number;
-    content: string;
-    embedding_json: string | null;
-    bm25_rank: number;
-  }>;
+      ftsQuery,
+      userId,
+      limit * 3,
+    );
+  }
 
   if (rows.length === 0) return [];
 
@@ -387,20 +424,33 @@ export async function searchUserKnowledgeBase(params: {
   return scored.slice(0, limit);
 }
 
-export function deleteUserDocument(customerDb: CustomerDatabase, userId: string, documentId: string): boolean {
-  const existing = customerDb.db
-    .prepare('SELECT id, revision FROM documents WHERE id = ? AND user_id = ? AND deleted_at IS NULL')
-    .get(documentId, userId) as { id: string; revision: number } | undefined;
+export async function deleteUserDocument(
+  customerDb: CustomerDatabase,
+  userId: string,
+  documentId: string,
+): Promise<boolean> {
+  const existing = await customerDb.db.get<{ id: string; revision: number }>(
+    'SELECT id, revision FROM documents WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
+    documentId,
+    userId,
+  );
   if (!existing) return false;
 
   const now = new Date().toISOString();
   const nextRev = existing.revision + 1;
-  customerDb.db.prepare('DELETE FROM document_chunks_fts WHERE document_id = ? AND user_id = ?').run(documentId, userId);
-  customerDb.db.prepare('DELETE FROM document_chunks WHERE document_id = ? AND user_id = ?').run(documentId, userId);
-  customerDb.db
-    .prepare('UPDATE documents SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ? AND user_id = ?')
-    .run(now, nextRev, now, documentId, userId);
-  customerDb.recordSyncChange(userId, 'document', documentId, 'delete', nextRev);
-  customerDb.recordAudit(userId, 'document_deleted', 'document', documentId);
+  if (customerDb.db.dialect === 'sqlite') {
+    await customerDb.db.run('DELETE FROM document_chunks_fts WHERE document_id = ? AND user_id = ?', documentId, userId);
+  }
+  await customerDb.db.run('DELETE FROM document_chunks WHERE document_id = ? AND user_id = ?', documentId, userId);
+  await customerDb.db.run(
+    'UPDATE documents SET deleted_at = ?, revision = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+    now,
+    nextRev,
+    now,
+    documentId,
+    userId,
+  );
+  await customerDb.recordSyncChange(userId, 'document', documentId, 'delete', nextRev);
+  await customerDb.recordAudit(userId, 'document_deleted', 'document', documentId);
   return true;
 }

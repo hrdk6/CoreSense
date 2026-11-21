@@ -19,6 +19,7 @@ import {
   saveOfflineCache,
   setAuthToken,
 } from './api';
+import { initSupabaseAuthSync, signOutSupabase } from './supabase';
 import { AuthView } from './components/AuthView';
 import { BrandLogo } from './components/BrandLogo';
 import { CopilotView } from './components/CopilotView';
@@ -42,6 +43,7 @@ export const App: React.FC = () => {
     return saved === 'light' ? 'light' : 'dark';
   });
   const [offlineBanner, setOfflineBanner] = useState(false);
+  const [passwordRecoveryPending, setPasswordRecoveryPending] = useState(false);
 
   const toggleTheme = () => {
     setTheme((prev) => {
@@ -86,7 +88,29 @@ export const App: React.FC = () => {
     reportDesktopActivation();
     const onErr = (ev: ErrorEvent) => reportClientCrash('desktop_window', ev.error || ev.message);
     window.addEventListener('error', onErr);
-    return () => window.removeEventListener('error', onErr);
+    let unsubSupabase: () => void = () => {};
+    initSupabaseAuthSync({
+      onSession: (session) => {
+        if (session?.access_token) {
+          setTokenReady(true);
+        } else {
+          setTokenReady(false);
+          setAccount(null);
+        }
+      },
+      onPasswordRecovery: () => {
+        setPasswordRecoveryPending(true);
+        setTokenReady(false);
+      },
+    })
+      .then((unsub) => {
+        unsubSupabase = unsub;
+      })
+      .catch(() => {});
+    return () => {
+      window.removeEventListener('error', onErr);
+      unsubSupabase();
+    };
   }, []);
 
   useEffect(() => {
@@ -98,12 +122,15 @@ export const App: React.FC = () => {
     document.documentElement.classList.toggle('light', theme === 'light');
   }, [theme]);
 
-  if (!tokenReady) {
+  if (!tokenReady || passwordRecoveryPending) {
     return (
       <AuthView
         theme={theme}
         onToggleTheme={toggleTheme}
+        passwordRecoveryPending={passwordRecoveryPending}
+        onPasswordRecoveryComplete={() => setPasswordRecoveryPending(false)}
         onAuthenticated={() => {
+          setPasswordRecoveryPending(false);
           setTokenReady(true);
         }}
       />
@@ -140,6 +167,7 @@ export const App: React.FC = () => {
   ];
 
   const handleLogout = () => {
+    void signOutSupabase();
     setAuthToken(null);
     try {
       localStorage.removeItem('coresense_offline_cache');

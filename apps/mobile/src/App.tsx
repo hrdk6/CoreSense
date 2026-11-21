@@ -32,6 +32,11 @@ import {
   setMobileSyncSeq,
   setMobileToken,
 } from './mobileApi';
+import {
+  getMobileSupabaseClient,
+  initMobileSupabaseSync,
+  signOutMobileSupabase,
+} from './supabase';
 import { PhoneDiagnosticsTab } from './components/PhoneDiagnosticsTab';
 
 type MobileTab = 'copilot' | 'phone' | 'devices' | 'manuals' | 'account';
@@ -105,6 +110,7 @@ export const App: React.FC = () => {
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [authErr, setAuthErr] = useState<string | null>(null);
+  const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
     localStorage.getItem(MOBILE_THEME_KEY) === 'light' ? 'light' : 'dark',
   );
@@ -195,6 +201,21 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     reportMobileActivation();
+    let unsub: () => void = () => {};
+    initMobileSupabaseSync({
+      onSession: (session) => {
+        if (session?.access_token) {
+          setAuthed(true);
+        } else {
+          setAuthed(false);
+        }
+      },
+    })
+      .then((fn) => {
+        unsub = fn;
+      })
+      .catch(() => {});
+    return () => unsub();
   }, []);
 
   useEffect(() => {
@@ -204,7 +225,43 @@ export const App: React.FC = () => {
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthErr(null);
+    setAuthInfo(null);
     try {
+      const sb = await getMobileSupabaseClient();
+      if (sb) {
+        if (authMode === 'login') {
+          const { data, error } = await sb.auth.signInWithPassword({
+            email: email.trim(),
+            password,
+          });
+          if (error) throw error;
+          if (!data.session?.access_token) {
+            throw new Error('Please confirm your email address first, then sign in.');
+          }
+          setMobileToken(data.session.access_token);
+          setAuthed(true);
+        } else {
+          const cleanName = (displayName || email.split('@')[0]).trim();
+          const { data, error } = await sb.auth.signUp({
+            email: email.trim(),
+            password,
+            options: {
+              emailRedirectTo: window.location.origin,
+              data: { display_name: cleanName },
+            },
+          });
+          if (error) throw error;
+          if (data.session?.access_token) {
+            setMobileToken(data.session.access_token);
+            setAuthed(true);
+          } else {
+            setAuthInfo(`Account created! Check ${email.trim()} to verify your email, then sign in.`);
+            setAuthMode('login');
+          }
+        }
+        return;
+      }
+
       const plat = (await detectMobilePlatform()).platform;
       const endpoint = authMode === 'login' ? '/api/v1/auth/login' : '/api/v1/auth/register';
       const res = await mobileApiRequest<{ accessToken: string }>(endpoint, {
@@ -467,6 +524,11 @@ export const App: React.FC = () => {
             {authErr && (
               <div className="rounded-md bg-[var(--cs-danger-soft)] border border-[var(--cs-danger-border)] px-3 py-2 text-xs text-[var(--cs-danger-ink)]">
                 {authErr}
+              </div>
+            )}
+            {authInfo && (
+              <div className="rounded-md bg-[var(--cs-ok-soft)] border border-[var(--cs-ok-border)] px-3 py-2 text-xs text-[var(--cs-ok-ink)]">
+                {authInfo}
               </div>
             )}
             <button type="submit" className="cs-btn-primary w-full py-2.5 text-sm cursor-pointer">
@@ -973,6 +1035,7 @@ export const App: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
+                  void signOutMobileSupabase();
                   setMobileToken(null);
                   setAuthed(false);
                 }}

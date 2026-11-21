@@ -53,6 +53,10 @@ jobs:
       - run: npm --workspace @coresense/shared run build
       - name: Build Tauri v2 Bundles
         working-directory: apps/desktop
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: npx tauri build --bundles ${{ matrix.bundles }}
       - uses: actions/upload-artifact@v4
         with:
