@@ -8,7 +8,9 @@ const API_URL_KEY = 'coresense_mobile_api_url';
 const SYNC_SEQ_KEY = 'coresense_mobile_sync_seq';
 
 export function getApiBaseUrl(): string {
-  return localStorage.getItem(API_URL_KEY) || import.meta.env.VITE_API_URL || 'http://127.0.0.1:4000';
+  const host =
+    typeof window !== 'undefined' && window.location.hostname ? window.location.hostname : '127.0.0.1';
+  return localStorage.getItem(API_URL_KEY) || import.meta.env.VITE_API_URL || `http://${host}:4000`;
 }
 
 export function setMobileApiBaseUrl(url: string): void {

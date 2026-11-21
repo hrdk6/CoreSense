@@ -44,7 +44,10 @@ export async function createCoreSenseServer(
         config.corsOrigins.includes(origin) ||
         origin.startsWith('http://localhost:') ||
         origin.startsWith('http://127.0.0.1:') ||
-        origin.startsWith('tauri://')
+        origin.startsWith('tauri://') ||
+        origin.startsWith('capacitor://') ||
+        origin === 'https://localhost' ||
+        (config.nodeEnv !== 'production' && /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(origin))
       ) {
         return cb(null, true);
       }
