@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.expo/
+web-build/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+apps/desktop/src-tauri/target/
+apps/api/data/
+apps/api/uploads/
+coverage/
+*.log
+.DS_Store
+Thumbs.db

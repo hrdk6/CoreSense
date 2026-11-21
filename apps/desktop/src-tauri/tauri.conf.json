@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CoreSense",
+  "version": "1.0.0",
+  "identifier": "com.coresense.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "CoreSense — AI Electronics Diagnostics",
+        "width": 1380,
+        "height": 860,
+        "minWidth": 1024,
+        "minHeight": 680,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "CoreSense Software",
+    "shortDescription": "AI-powered electronics diagnostics and repair intelligence",
+    "longDescription": "Understand what's happening beneath the surface. CoreSense combines real read-only OS diagnostics, multimodal AI, and technical document retrieval.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

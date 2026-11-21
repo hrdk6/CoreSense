@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for CoreSense main window (strictly scoped — no unrestricted shell execution)",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,21 @@
+[package]
+name = "coresense-desktop"
+version = "1.0.0"
+description = "CoreSense — AI-powered electronics diagnostics and repair intelligence desktop application"
+authors = ["CoreSense"]
+edition = "2021"
+
+[lib]
+name = "coresense_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.33"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }

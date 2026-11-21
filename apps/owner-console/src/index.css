@@ -1,0 +1,211 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-display: "Archivo", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* ============================================================================
+   CoreSense Owner Console — Executive Ops Graphite (Zero Gradients)
+   Distinct Calibration Amber + Signal Teal + Telemetry Blue ops language
+   ============================================================================ */
+:root {
+  color-scheme: dark;
+  --oc-chassis: #0e131b;
+  --oc-canvas: #131924;
+  --oc-surface: #1a2230;
+  --oc-well: #0c1017;
+  --oc-border: #283345;
+  --oc-border-strong: #415169;
+
+  --oc-ink: #edf2f7;
+  --oc-ink-2: #cbd5e1;
+  --oc-ink-muted: #8b9bb0;
+
+  --oc-brand: #f59e0b;
+  --oc-brand-hover: #fbbf24;
+  --oc-brand-soft: #2e2310;
+  --oc-brand-border: #6b4e16;
+  --oc-brand-ink: #fcd34d;
+
+  --oc-blue: #3b82f6;
+  --oc-blue-soft: #182945;
+  --oc-blue-border: #2c4a7c;
+  --oc-blue-ink: #93c5fd;
+
+  --oc-ok: #14b8a6;
+  --oc-ok-soft: #122d2d;
+  --oc-ok-border: #1e5753;
+  --oc-ok-ink: #5eead4;
+
+  --oc-danger: #f43f5e;
+  --oc-danger-soft: #331620;
+  --oc-danger-border: #73253b;
+  --oc-danger-ink: #fda4af;
+}
+
+html.light {
+  color-scheme: light;
+  --oc-chassis: #e6ebf1;
+  --oc-canvas: #f5f7fa;
+  --oc-surface: #ffffff;
+  --oc-well: #dde4ec;
+  --oc-border: #cad4e0;
+  --oc-border-strong: #94a3b8;
+
+  --oc-ink: #111824;
+  --oc-ink-2: #334155;
+  --oc-ink-muted: #55657a;
+
+  --oc-brand: #b45309;
+  --oc-brand-hover: #92400e;
+  --oc-brand-soft: #fdf2df;
+  --oc-brand-border: #e5bd78;
+  --oc-brand-ink: #92400e;
+
+  --oc-blue: #1d4ed8;
+  --oc-blue-soft: #e6eeff;
+  --oc-blue-border: #adc5ff;
+  --oc-blue-ink: #1e3a8a;
+
+  --oc-ok: #0f766e;
+  --oc-ok-soft: #e2f5f2;
+  --oc-ok-border: #99d5cc;
+  --oc-ok-ink: #115e59;
+
+  --oc-danger: #be123c;
+  --oc-danger-soft: #fce8ed;
+  --oc-danger-border: #eda1b3;
+  --oc-danger-ink: #9f1239;
+}
+
+body {
+  background-color: var(--oc-canvas);
+  color: var(--oc-ink);
+  font-family: var(--font-sans);
+}
+
+.oc-theme-switching,
+.oc-theme-switching * {
+  transition: none !important;
+}
+
+.oc-heading {
+  font-family: var(--font-display);
+  letter-spacing: -0.025em;
+}
+
+.oc-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.oc-panel {
+  background-color: var(--oc-surface);
+  border: 1px solid var(--oc-border);
+  border-radius: 10px;
+}
+
+.oc-input {
+  background-color: var(--oc-well);
+  border: 1px solid var(--oc-border);
+  color: var(--oc-ink);
+  border-radius: 8px;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.oc-input::placeholder {
+  color: var(--oc-ink-muted);
+}
+
+.oc-input:focus {
+  outline: none;
+  border-color: var(--oc-brand);
+  box-shadow: 0 0 0 2px var(--oc-brand-soft);
+}
+
+.oc-btn-primary {
+  background-color: var(--oc-brand);
+  color: #111824;
+  border: 1px solid var(--oc-brand);
+  border-radius: 8px;
+  font-weight: 700;
+  transition: background-color 140ms ease, transform 100ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html.light .oc-btn-primary {
+  color: #ffffff;
+}
+
+.oc-btn-primary:hover:not(:disabled) {
+  background-color: var(--oc-brand-hover);
+}
+
+.oc-btn-primary:active:not(:disabled) {
+  transform: scale(0.985);
+}
+
+.oc-btn-secondary {
+  background-color: var(--oc-surface);
+  color: var(--oc-ink);
+  border: 1px solid var(--oc-border);
+  border-radius: 8px;
+  font-weight: 500;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.oc-btn-secondary:hover:not(:disabled) {
+  border-color: var(--oc-border-strong);
+}
+
+.oc-grid-bg {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M32 0H0V32' fill='none' stroke='%2394a3b8' stroke-opacity='0.11' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 32px 32px;
+}
+
+@keyframes oc-view-in {
+  from {
+    opacity: 0.55;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes oc-led {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.oc-animate-view {
+  animation: oc-view-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.oc-animate-led {
+  animation: oc-led 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oc-animate-view,
+  .oc-animate-led {
+    animation: none !important;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--oc-border-strong);
+  border-radius: 3px;
+}

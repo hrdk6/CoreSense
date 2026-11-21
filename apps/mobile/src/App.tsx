@@ -1,0 +1,782 @@
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Activity,
+  BookOpen,
+  Camera,
+  Cloud,
+  Laptop,
+  LogOut,
+  MessageSquare,
+  Mic,
+  Moon,
+  Plus,
+  RefreshCw,
+  Send,
+  Sun,
+  User,
+  Wrench,
+  X,
+} from 'lucide-react';
+import type { ExpertiseMode } from '@coresense/shared';
+import {
+  detectMobilePlatform,
+  getInstallId,
+  getMobileSyncSeq,
+  getMobileToken,
+  mobileApiRequest,
+  reportMobileActivation,
+  setMobileSyncSeq,
+  setMobileToken,
+} from './mobileApi';
+import { PhoneDiagnosticsTab } from './components/PhoneDiagnosticsTab';
+
+type MobileTab = 'copilot' | 'phone' | 'devices' | 'manuals' | 'account';
+const MOBILE_THEME_KEY = 'coresense_mobile_theme';
+
+const MobileMark: React.FC<{ small?: boolean }> = ({ small = false }) => (
+  <div
+    className={`flex shrink-0 items-center justify-center bg-[#111824] border border-[#2a3444] ${
+      small ? 'h-8 w-8 rounded-lg' : 'h-11 w-11 rounded-[10px]'
+    }`}
+  >
+    <svg viewBox="0 0 128 128" className={small ? 'h-5 w-5' : 'h-7 w-7'} fill="none" aria-hidden="true">
+      <path
+        d="M16 68 H42 L53 34 L67 96 L78 52 L87 68 H112"
+        stroke="#3B82F6"
+        strokeWidth="9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="112" cy="68" r="6" fill="#14B8A6" />
+    </svg>
+  </div>
+);
+
+function renderMobileMarkdown(text: string): React.ReactNode {
+  return text.split('\n').map((line, i) => {
+    const trimmed = line.trim();
+    if (!trimmed) return <div key={i} className="h-1" />;
+    const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`|_[^_]+_)/g).map((p, idx) => {
+      if (p.startsWith('**') && p.endsWith('**')) {
+        return (
+          <strong key={idx} className="text-[var(--cs-ink)] font-semibold">
+            {p.slice(2, -2)}
+          </strong>
+        );
+      }
+      if (p.startsWith('`') && p.endsWith('`')) {
+        return (
+          <code
+            key={idx}
+            className="bg-[var(--cs-well)] border border-[var(--cs-border)] px-1 rounded font-mono text-[11px] text-[var(--cs-accent-ink)]"
+          >
+            {p.slice(1, -1)}
+          </code>
+        );
+      }
+      if (p.startsWith('_') && p.endsWith('_') && p.length > 2) {
+        return (
+          <em key={idx} className="text-[var(--cs-ink-muted)] italic">
+            {p.slice(1, -1)}
+          </em>
+        );
+      }
+      return <React.Fragment key={idx}>{p}</React.Fragment>;
+    });
+    if (trimmed.startsWith('### ')) {
+      return (
+        <div key={i} className="cs-heading font-bold text-[var(--cs-ink)] pt-1.5">
+          {trimmed.slice(4)}
+        </div>
+      );
+    }
+    return <div key={i}>{parts}</div>;
+  });
+}
+
+export const App: React.FC = () => {
+  const [authed, setAuthed] = useState(Boolean(getMobileToken()));
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [authErr, setAuthErr] = useState<string | null>(null);
+  const [theme, setTheme] = useState<'light' | 'dark'>(() =>
+    localStorage.getItem(MOBILE_THEME_KEY) === 'dark' ? 'dark' : 'light',
+  );
+
+  const [tab, setTab] = useState<MobileTab>('copilot');
+  const [profile, setProfile] = useState<{
+    displayName: string;
+    email: string;
+    expertiseMode: ExpertiseMode;
+    planTier: string;
+  } | null>(null);
+  const [devices, setDevices] = useState<Array<{ id: string; name: string; category: string; model: string }>>([]);
+  const [cases, setCases] = useState<Array<{ id: string; title: string; status: string; totalExpense: number }>>([]);
+  const [docs, setDocs] = useState<Array<{ id: string; title: string; pageCount: number; chunkCount: number }>>([]);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+
+  // Mobile Copilot state
+  const [invId, setInvId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Array<{ id: string; role: string; content: string; aiProvider?: string }>>([]);
+  const [hypotheses, setHypotheses] = useState<Array<{ id: string; title: string; discriminatingTest: string }>>([]);
+  const [prompt, setPrompt] = useState('');
+  const [photo, setPhoto] = useState<{ base64: string; mimeType: string; filename: string } | null>(null);
+  const [sending, setSending] = useState(false);
+
+  // Quick Add Device / Case forms
+  const [newDevName, setNewDevName] = useState('');
+  const [newCaseTitle, setNewCaseTitle] = useState('');
+
+  const camRef = useRef<HTMLInputElement | null>(null);
+
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      localStorage.setItem(MOBILE_THEME_KEY, next);
+      document.documentElement.classList.add('cs-theme-switching');
+      document.documentElement.classList.toggle('dark', next === 'dark');
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          document.documentElement.classList.remove('cs-theme-switching');
+        });
+      });
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
+
+  const loadAll = async () => {
+    try {
+      const [me, devRes, caseRes, docRes, invRes] = await Promise.all([
+        mobileApiRequest<{ user: typeof profile }>('/api/v1/account/me'),
+        mobileApiRequest<{ devices: typeof devices }>('/api/v1/devices'),
+        mobileApiRequest<{ cases: typeof cases }>('/api/v1/cases'),
+        mobileApiRequest<{ documents: typeof docs }>('/api/v1/documents'),
+        mobileApiRequest<{ investigations: Array<{ id: string }> }>('/api/v1/investigations'),
+      ]);
+      setProfile(me.user);
+      setDevices(devRes.devices);
+      setCases(caseRes.cases);
+      setDocs(docRes.documents);
+      if (!invId && invRes.investigations.length > 0) {
+        const latestId = invRes.investigations[0].id;
+        setInvId(latestId);
+        const det = await mobileApiRequest<{
+          investigation: { hypotheses: typeof hypotheses };
+          messages: typeof messages;
+        }>(`/api/v1/investigations/${latestId}`);
+        setMessages(det.messages);
+        setHypotheses(det.investigation.hypotheses);
+      }
+    } catch {
+      setMobileToken(null);
+      setAuthed(false);
+    }
+  };
+
+  useEffect(() => {
+    reportMobileActivation();
+  }, []);
+
+  useEffect(() => {
+    if (authed) loadAll();
+  }, [authed]);
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthErr(null);
+    try {
+      const plat = (await detectMobilePlatform()).platform;
+      const endpoint = authMode === 'login' ? '/api/v1/auth/login' : '/api/v1/auth/register';
+      const res = await mobileApiRequest<{ accessToken: string }>(endpoint, {
+        method: 'POST',
+        skipAuth: true,
+        body:
+          authMode === 'login'
+            ? { email, password, platform: plat, installId: getInstallId() }
+            : {
+                email,
+                password,
+                displayName: displayName || email.split('@')[0],
+                expertiseMode: 'everyday',
+                platform: plat,
+                installId: getInstallId(),
+              },
+      });
+      setMobileToken(res.accessToken);
+      setAuthed(true);
+    } catch (err) {
+      setAuthErr(err instanceof Error ? err.message : 'Unable to sign in. Check your credentials.');
+    }
+  };
+
+  const handleVoiceDictate = () => {
+    const SpeechRec =
+      (window as unknown as { SpeechRecognition?: new () => any; webkitSpeechRecognition?: new () => any })
+        .SpeechRecognition ||
+      (window as unknown as { webkitSpeechRecognition?: new () => any }).webkitSpeechRecognition;
+    if (!SpeechRec) return;
+    const rec = new SpeechRec();
+    rec.lang = 'en-US';
+    rec.onresult = (ev: any) => {
+      const txt = ev.results?.[0]?.[0]?.transcript || '';
+      setPrompt((p) => (p ? `${p} ${txt}` : txt));
+    };
+    rec.start();
+  };
+
+  const handleSendCopilot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!prompt.trim() || sending) return;
+    setSending(true);
+    try {
+      let targetId = invId;
+      if (!targetId) {
+        const res = await mobileApiRequest<{
+          investigation: { id: string };
+          hypotheses: typeof hypotheses;
+        }>('/api/v1/investigations', {
+          method: 'POST',
+          body: {
+            initialSymptom: prompt,
+            inputModality: photo ? 'image' : 'text',
+            imageBase64: photo?.base64,
+            imageMimeType: photo?.mimeType,
+            imageFilename: photo?.filename,
+          },
+        });
+        targetId = res.investigation.id;
+        setInvId(targetId);
+      } else {
+        await mobileApiRequest(`/api/v1/investigations/${targetId}/messages`, {
+          method: 'POST',
+          body: {
+            message: prompt,
+            inputModality: photo ? 'image' : 'text',
+            imageBase64: photo?.base64,
+            imageMimeType: photo?.mimeType,
+            imageFilename: photo?.filename,
+          },
+        });
+      }
+      setPrompt('');
+      setPhoto(null);
+      const det = await mobileApiRequest<{
+        investigation: { hypotheses: typeof hypotheses };
+        messages: typeof messages;
+      }>(`/api/v1/investigations/${targetId}`);
+      setMessages(det.messages);
+      setHypotheses(det.investigation.hypotheses);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      const seq = getMobileSyncSeq();
+      const res = await mobileApiRequest<{ latestSeq: number; changes: unknown[] }>(
+        `/api/v1/sync/pull?sinceSeq=${seq}`,
+      );
+      setMobileSyncSeq(res.latestSeq);
+      setSyncMsg(`Synced with desktop at cursor #${res.latestSeq} (${res.changes.length} updates).`);
+      await loadAll();
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleQuickAddDevice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDevName.trim()) return;
+    await mobileApiRequest('/api/v1/devices', {
+      method: 'POST',
+      body: { name: newDevName, category: 'smartphone', manufacturer: 'Mobile', model: 'Personal Phone' },
+    });
+    setNewDevName('');
+    await loadAll();
+  };
+
+  const handleQuickAddCase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCaseTitle.trim()) return;
+    await mobileApiRequest('/api/v1/cases', {
+      method: 'POST',
+      body: { title: newCaseTitle, symptomSummary: 'Created from CoreSense Mobile companion' },
+    });
+    setNewCaseTitle('');
+    await loadAll();
+  };
+
+  if (!authed) {
+    return (
+      <div className="min-h-screen bg-[var(--cs-chassis)] flex items-center justify-center p-5">
+        <div className="w-full max-w-sm cs-panel p-6 space-y-5 cs-animate-view">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <MobileMark />
+              <div>
+                <h1 className="cs-heading text-lg font-bold text-[var(--cs-ink)]">CoreSense Mobile</h1>
+                <p className="text-xs text-[var(--cs-ink-muted)]">Portable repair companion</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label="Toggle theme"
+              className="cs-btn-secondary h-8 w-8 flex items-center justify-center cursor-pointer"
+            >
+              {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+
+          <div className="relative grid grid-cols-2 p-1 rounded-lg bg-[var(--cs-well)] border border-[var(--cs-border)]">
+            <div
+              aria-hidden="true"
+              className="absolute top-1 bottom-1 left-1 w-[calc(50%-4px)] rounded-md bg-[var(--cs-surface)] border border-[var(--cs-border)] transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]"
+              style={{ transform: `translateX(${authMode === 'login' ? 0 : 100}%)` }}
+            />
+            <button
+              type="button"
+              onClick={() => setAuthMode('login')}
+              className={`relative z-10 py-2 text-xs font-semibold cursor-pointer ${
+                authMode === 'login' ? 'text-[var(--cs-ink)]' : 'text-[var(--cs-ink-muted)]'
+              }`}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuthMode('register')}
+              className={`relative z-10 py-2 text-xs font-semibold cursor-pointer ${
+                authMode === 'register' ? 'text-[var(--cs-ink)]' : 'text-[var(--cs-ink-muted)]'
+              }`}
+            >
+              Create account
+            </button>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-3">
+            {authMode === 'register' && (
+              <input
+                required
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Display name"
+                className="cs-input w-full px-3.5 py-2.5 text-sm"
+              />
+            )}
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Email (same account as desktop)"
+              className="cs-input w-full px-3.5 py-2.5 text-sm"
+            />
+            <input
+              type="password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password"
+              className="cs-input w-full px-3.5 py-2.5 text-sm"
+            />
+            {authErr && (
+              <div className="rounded-md bg-[var(--cs-danger-soft)] border border-[var(--cs-danger-border)] px-3 py-2 text-xs text-[var(--cs-danger-ink)]">
+                {authErr}
+              </div>
+            )}
+            <button type="submit" className="cs-btn-primary w-full py-2.5 text-sm cursor-pointer">
+              {authMode === 'login' ? 'Sign in' : 'Create mobile account'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-dvh overflow-hidden bg-[var(--cs-chassis)] flex justify-center">
+      <div className="w-full max-w-md h-full bg-[var(--cs-canvas)] border-x border-[var(--cs-border)] flex flex-col overflow-hidden">
+        {/* Top App Bar */}
+        <header className="shrink-0 px-4 py-3 border-b border-[var(--cs-border)] bg-[var(--cs-surface)] flex items-center justify-between z-20">
+          <div className="flex items-center gap-2.5">
+            <MobileMark small />
+            <div>
+              <div className="cs-heading text-sm font-bold text-[var(--cs-ink)] leading-none">
+                CoreSense
+              </div>
+              <div className="text-[11px] text-[var(--cs-ink-muted)] mt-0.5">Portable companion</div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleSync}
+              className="cs-btn-secondary flex items-center gap-1 px-2.5 py-1.5 text-xs cursor-pointer"
+            >
+              <RefreshCw className={`h-3 w-3 text-[var(--cs-accent)] ${syncing ? 'animate-spin' : ''}`} />
+              <span>Sync</span>
+            </button>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label="Toggle theme"
+              className="cs-btn-secondary h-8 w-8 flex items-center justify-center cursor-pointer"
+            >
+              {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        </header>
+
+        {/* Main Viewport Body */}
+        <main
+          key={tab}
+          className={`flex-1 min-h-0 cs-animate-view ${
+            tab === 'copilot' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto px-4 pt-4 pb-6'
+          }`}
+        >
+          {syncMsg && (
+            <div className={`${tab === 'copilot' ? 'mx-4 mt-3' : 'mb-3'} rounded-lg bg-[var(--cs-ok-soft)] border border-[var(--cs-ok-border)] px-3 py-2 text-xs text-[var(--cs-ok-ink)] flex justify-between gap-2 cs-animate-view shrink-0`}>
+              <span>{syncMsg}</span>
+              <button type="button" onClick={() => setSyncMsg(null)} className="cursor-pointer">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+
+          {tab === 'copilot' && (
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <div className="shrink-0 px-4 pt-3.5 pb-2.5 flex items-center justify-between border-b border-[var(--cs-border)] bg-[var(--cs-canvas)]">
+                <h1 className="cs-heading text-base font-bold text-[var(--cs-ink)]">Repair copilot</h1>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInvId(null);
+                    setMessages([]);
+                    setHypotheses([]);
+                  }}
+                  className="text-xs text-[var(--cs-accent)] font-semibold cursor-pointer"
+                >
+                  + New session
+                </button>
+              </div>
+
+              <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+                {hypotheses.length > 0 && (
+                  <div className="rounded-lg bg-[var(--cs-surface)] border border-[var(--cs-border)] border-l-[3px] border-l-[var(--cs-accent)] p-3 space-y-1">
+                    <div className="text-[11px] font-semibold text-[var(--cs-accent-ink)]">
+                      Leading hypothesis
+                    </div>
+                    <div className="text-xs font-semibold text-[var(--cs-ink)]">{hypotheses[0].title}</div>
+                    <div className="text-xs text-[var(--cs-ink-2)]">{hypotheses[0].discriminatingTest}</div>
+                  </div>
+                )}
+
+                <div className="space-y-2.5">
+                  {messages.length === 0 ? (
+                    <div className="cs-panel p-5 space-y-3">
+                      <div className="h-9 w-9 rounded-lg bg-[var(--cs-chassis)] border border-[var(--cs-border)] flex items-center justify-center">
+                        <Wrench className="h-4 w-4 text-[var(--cs-accent)]" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="cs-heading text-sm font-bold text-[var(--cs-ink)]">
+                          Camera, voice, or text diagnosis
+                        </div>
+                        <p className="text-xs text-[var(--cs-ink-muted)] leading-relaxed">
+                          Photograph a board or port, dictate a fault, or continue an investigation synced from desktop.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPrompt("My phone's Wi-Fi stopped working.")}
+                        className="cs-btn-secondary w-full text-left py-2.5 px-3 text-xs cursor-pointer"
+                      >
+                        Try: "My phone's Wi-Fi stopped working."
+                      </button>
+                    </div>
+                  ) : (
+                    messages.map((m) => (
+                      <div
+                        key={m.id}
+                        className={`rounded-lg p-3 text-xs leading-relaxed whitespace-pre-wrap ${
+                          m.role === 'user'
+                            ? 'bg-[var(--cs-well)] border border-[var(--cs-border)] ml-6 text-[var(--cs-ink)]'
+                            : 'bg-[var(--cs-surface)] border border-[var(--cs-border)] border-l-[3px] border-l-[var(--cs-accent)] mr-3 text-[var(--cs-ink-2)]'
+                        }`}
+                      >
+                        {m.role === 'assistant' ? (
+                          <div className="space-y-1">{renderMobileMarkdown(m.content)}</div>
+                        ) : (
+                          m.content
+                        )}
+                        {m.aiProvider && (
+                          <div className="mt-2 pt-1.5 border-t border-[var(--cs-border)] text-[10px] font-mono text-[var(--cs-ink-muted)]">
+                            Engine: {m.aiProvider}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+
+                  {sending && (
+                    <div className="flex items-center gap-2.5 rounded-lg bg-[var(--cs-surface)] border border-[var(--cs-border)] p-3 text-xs text-[var(--cs-ink-muted)]">
+                      <div className="flex items-end gap-0.5 h-3">
+                        {[0, 90, 180, 270].map((d) => (
+                          <span
+                            key={d}
+                            className="w-1 h-full bg-[var(--cs-accent)] cs-animate-eq"
+                            style={{ animationDelay: `${d}ms` }}
+                          />
+                        ))}
+                      </div>
+                      <span>Analyzing fault...</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Pinned Mobile Composer */}
+              <form
+                onSubmit={handleSendCopilot}
+                className="shrink-0 px-3.5 py-2.5 border-t border-[var(--cs-border)] bg-[var(--cs-surface)] space-y-2"
+              >
+                {photo && (
+                  <div className="flex items-center justify-between rounded-lg bg-[var(--cs-canvas)] border border-[var(--cs-accent-border)] px-3 py-1.5 text-xs">
+                    <span className="truncate text-[var(--cs-ink)] font-medium">{photo.filename}</span>
+                    <button type="button" onClick={() => setPhoto(null)} className="cursor-pointer">
+                      <X className="h-4 w-4 text-[var(--cs-ink-muted)]" />
+                    </button>
+                  </div>
+                )}
+                <div className="flex items-center gap-1.5">
+                  <input
+                    ref={camRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      const r = new FileReader();
+                      r.onload = () => setPhoto({ base64: String(r.result || ''), mimeType: f.type, filename: f.name });
+                      r.readAsDataURL(f);
+                    }}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => camRef.current?.click()}
+                    className="cs-btn-secondary h-10 w-10 shrink-0 flex items-center justify-center cursor-pointer"
+                    title="Camera capture"
+                    aria-label="Camera capture"
+                  >
+                    <Camera className="h-4 w-4 text-[var(--cs-accent)]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleVoiceDictate}
+                    className="cs-btn-secondary h-10 w-10 shrink-0 flex items-center justify-center cursor-pointer"
+                    title="Voice input"
+                    aria-label="Voice input"
+                  >
+                    <Mic className="h-4 w-4 text-[var(--cs-ink-2)]" />
+                  </button>
+                  <input
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                    placeholder="Describe fault or component..."
+                    className="cs-input flex-1 min-w-0 h-10 px-3 text-xs"
+                  />
+                  <button
+                    type="submit"
+                    disabled={sending || !prompt.trim()}
+                    className="cs-btn-primary h-10 w-10 shrink-0 flex items-center justify-center cursor-pointer disabled:opacity-40"
+                    aria-label="Send message"
+                  >
+                    <Send className="h-4 w-4" />
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {tab === 'phone' && (
+            <PhoneDiagnosticsTab
+              onSendPhotoToCopilot={(captured) => {
+                setPhoto(captured);
+                setPrompt('What is this component and is there visible damage?');
+                setTab('copilot');
+              }}
+            />
+          )}
+
+          {tab === 'devices' && (
+            <div className="space-y-5">
+              <div className="space-y-2.5">
+                <h1 className="cs-heading text-base font-bold text-[var(--cs-ink)]">
+                  Synced devices ({devices.length})
+                </h1>
+                <form onSubmit={handleQuickAddDevice} className="flex gap-2">
+                  <input
+                    value={newDevName}
+                    onChange={(e) => setNewDevName(e.target.value)}
+                    placeholder="Add phone, laptop, or console..."
+                    className="cs-input flex-1 px-3 py-2 text-xs"
+                  />
+                  <button type="submit" className="cs-btn-primary px-3 text-xs cursor-pointer">
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </form>
+                <div className="space-y-2">
+                  {devices.map((d) => (
+                    <div key={d.id} className="cs-panel p-3 flex justify-between items-center">
+                      <div>
+                        <div className="text-xs font-semibold text-[var(--cs-ink)]">{d.name}</div>
+                        <div className="text-[11px] text-[var(--cs-ink-muted)]">{d.model || d.category}</div>
+                      </div>
+                      <span className="text-[11px] rounded bg-[var(--cs-well)] px-2 py-0.5 text-[var(--cs-ink-2)] capitalize">
+                        {d.category.replace('_', ' ')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2.5 pt-3 border-t border-[var(--cs-border)]">
+                <h2 className="cs-heading text-base font-bold text-[var(--cs-ink)]">
+                  Repair cases ({cases.length})
+                </h2>
+                <form onSubmit={handleQuickAddCase} className="flex gap-2">
+                  <input
+                    value={newCaseTitle}
+                    onChange={(e) => setNewCaseTitle(e.target.value)}
+                    placeholder="New repair case title..."
+                    className="cs-input flex-1 px-3 py-2 text-xs"
+                  />
+                  <button type="submit" className="cs-btn-accent px-3 text-xs cursor-pointer">
+                    <Plus className="h-4 w-4" />
+                  </button>
+                </form>
+                <div className="space-y-2">
+                  {cases.map((c) => (
+                    <div key={c.id} className="cs-panel p-3 flex justify-between text-xs">
+                      <span className="font-semibold text-[var(--cs-ink)]">{c.title}</span>
+                      <span className="font-mono text-[var(--cs-ok-ink)] cs-tabular">
+                        ${Number(c.totalExpense || 0).toFixed(0)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab === 'manuals' && (
+            <div className="space-y-3">
+              <h1 className="cs-heading text-base font-bold text-[var(--cs-ink)]">
+                Synced service manuals ({docs.length})
+              </h1>
+              <p className="text-xs text-[var(--cs-ink-muted)] leading-relaxed">
+                Manuals indexed on desktop stay available for citations on your phone.
+              </p>
+              {docs.length === 0 ? (
+                <div className="cs-panel p-6 text-center text-xs text-[var(--cs-ink-muted)]">
+                  No manuals synced yet.
+                </div>
+              ) : (
+                docs.map((doc) => (
+                  <div key={doc.id} className="cs-panel p-3.5 space-y-1">
+                    <div className="text-xs font-semibold text-[var(--cs-ink)]">{doc.title}</div>
+                    <div className="text-[11px] font-mono text-[var(--cs-ink-muted)] cs-tabular">
+                      {doc.pageCount} page(s) / {doc.chunkCount} searchable chunks
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {tab === 'account' && profile && (
+            <div className="space-y-3.5">
+              <div className="cs-panel p-4 space-y-2">
+                <div className="cs-heading text-sm font-bold text-[var(--cs-ink)]">{profile.displayName}</div>
+                <div className="text-xs text-[var(--cs-ink-muted)]">{profile.email}</div>
+                <div className="flex gap-2 pt-1 text-[11px]">
+                  <span className="rounded bg-[var(--cs-accent-soft)] text-[var(--cs-accent-ink)] px-2 py-0.5 capitalize font-medium">
+                    {profile.expertiseMode} depth
+                  </span>
+                  <span className="rounded bg-[var(--cs-well)] text-[var(--cs-ink-2)] px-2 py-0.5 capitalize font-medium">
+                    {profile.planTier} plan
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSync}
+                className="cs-btn-secondary w-full flex items-center justify-center gap-2 py-3 text-xs font-semibold cursor-pointer"
+              >
+                <Cloud className="h-4 w-4 text-[var(--cs-accent)]" />
+                <span>Pull latest desktop sync</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileToken(null);
+                  setAuthed(false);
+                }}
+                className="w-full flex items-center justify-center gap-2 rounded-lg border border-[var(--cs-danger-border)] bg-[var(--cs-danger-soft)] py-3 text-xs font-semibold text-[var(--cs-danger-ink)] cursor-pointer"
+              >
+                <LogOut className="h-4 w-4" />
+                <span>Sign out</span>
+              </button>
+            </div>
+          )}
+        </main>
+
+        {/* Bottom Navigation Bar */}
+        <nav className="shrink-0 w-full border-t border-[var(--cs-border)] bg-[var(--cs-surface)] grid grid-cols-5 z-20">
+          {[
+            { id: 'copilot', label: 'Copilot', icon: MessageSquare },
+            { id: 'phone', label: 'Checks', icon: Activity },
+            { id: 'devices', label: 'Devices', icon: Laptop },
+            { id: 'manuals', label: 'Manuals', icon: BookOpen },
+            { id: 'account', label: 'Account', icon: User },
+          ].map((item) => {
+            const Icon = item.icon;
+            const active = tab === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setTab(item.id as MobileTab)}
+                className={`relative flex flex-col items-center gap-1 py-2.5 text-[11px] font-medium transition-colors cursor-pointer ${
+                  active ? 'text-[var(--cs-accent)] font-semibold' : 'text-[var(--cs-ink-muted)]'
+                }`}
+              >
+                <span
+                  className={`absolute top-0 left-3 right-3 h-[2.5px] bg-[var(--cs-accent)] transition-transform duration-200 ${
+                    active ? 'scale-x-100' : 'scale-x-0'
+                  }`}
+                />
+                <Icon className="h-4 w-4" />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+    </div>
+  );
+};

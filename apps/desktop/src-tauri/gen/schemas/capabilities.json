@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Default capability for CoreSense main window (strictly scoped — no unrestricted shell execution)","local":true,"windows":["main"],"permissions":["core:default"]}}
