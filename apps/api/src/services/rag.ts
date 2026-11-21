@@ -14,6 +14,8 @@ export interface ParsedChunk {
   content: string;
 }
 
+export type RetrievalMatchMode = 'hybrid_rrf' | 'semantic_vector' | 'lexical_fts';
+
 export interface RetrievedCitation {
   documentId: string;
   documentTitle: string;
@@ -25,23 +27,43 @@ export interface RetrievedCitation {
   hasTable: boolean;
   hasCommandBlock: boolean;
   relevanceScore: number;
+  matchMode: RetrievalMatchMode;
+  lexicalScore: number | null;
+  semanticSimilarity: number | null;
   flaggedInjectionAttempt: boolean;
 }
+
+export interface UserRagStats {
+  documentCount: number;
+  totalChunks: number;
+  embeddedChunks: number;
+  embeddingCoveragePercent: number;
+  embeddingModel: string;
+  embeddingDimensions: number;
+  fusionMethod: string;
+  vectorSearchActive: boolean;
+}
+
+const EMBEDDING_DIMS = 768;
+const RRF_K = 60;
 
 async function extractPagesFromBuffer(
   buffer: Buffer,
   detectedKind: 'pdf' | 'text',
 ): Promise<Array<{ pageNumber: number; text: string }>> {
   if (detectedKind === 'pdf') {
-    // Use pdf-parse with per-page rendering hook to preserve exact page numbers
     const pdfParseModule = await import('pdf-parse');
-    const pdfParse = pdfParseModule.default ?? (pdfParseModule as unknown as (b: Buffer, opts?: unknown) => Promise<{ text: string; numpages: number }>);
+    const pdfParse =
+      pdfParseModule.default ??
+      (pdfParseModule as unknown as (b: Buffer, opts?: unknown) => Promise<{ text: string; numpages: number }>);
     const pages: Array<{ pageNumber: number; text: string }> = [];
     let currentPage = 0;
 
     try {
       await pdfParse(buffer, {
-        pagerender: (pageData: { getTextContent: () => Promise<{ items: Array<{ str: string; hasEOL?: boolean }> }> }) =>
+        pagerender: (pageData: {
+          getTextContent: () => Promise<{ items: Array<{ str: string; hasEOL?: boolean }> }>;
+        }) =>
           pageData.getTextContent().then((tc) => {
             currentPage += 1;
             const text = tc.items.map((item) => item.str + (item.hasEOL ? '\n' : ' ')).join('');
@@ -50,7 +72,6 @@ async function extractPagesFromBuffer(
           }),
       });
     } catch {
-      // Fallback: extract printable ASCII/UTF-8 text runs if PDF has unusual xref
       const raw = buffer.toString('latin1');
       const cleaned = raw.replace(/[^\x20-\x7E\r\n]/g, ' ').replace(/\s{3,}/g, '\n');
       return [{ pageNumber: 1, text: cleaned.slice(0, 60_000) }];
@@ -59,7 +80,6 @@ async function extractPagesFromBuffer(
     return pages.length > 0 ? pages : [{ pageNumber: 1, text: '' }];
   }
 
-  // Plain text / Markdown — support explicit form-feed (\f) or `--- Page N ---` markers
   const fullText = buffer.toString('utf8');
   const rawPages = fullText.split(/\f|\n-{3,}\s*page\s+\d+\s*-{3,}\n/i);
   return rawPages.map((text, idx) => ({
@@ -90,7 +110,6 @@ function chunkDocumentPages(pages: Array<{ pageNumber: number; text: string }>):
 
   for (const page of pages) {
     if (!page.text.trim()) continue;
-    // Split on double newlines while preserving fenced code blocks and tables
     const paragraphs = page.text.split(/\n{2,}/);
     let buffer = '';
 
@@ -124,53 +143,19 @@ function chunkDocumentPages(pages: Array<{ pageNumber: number; text: string }>):
   return chunks;
 }
 
-async function computeEmbeddingIfConfigured(
-  text: string,
-  config: AppConfig,
-  ownerDb: OwnerDatabase,
-  anonymousUserHash?: string,
-): Promise<number[] | null> {
-  if (!config.geminiApiKey) return null;
-  const started = Date.now();
-  try {
-    const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
-    const res = await ai.models.embedContent({
-      model: config.geminiEmbeddingModel,
-      contents: text.slice(0, 4000),
-    });
-    const values = res.embeddings?.[0]?.values ?? null;
-    await ownerDb.recordAiUsage({
-      anonymousUserHash,
-      provider: 'gemini',
-      model: config.geminiEmbeddingModel,
-      feature: 'knowledge_base_embedding',
-      modality: 'embedding',
-      inputTokens: Math.ceil(text.length / 4),
-      outputTokens: 0,
-      latencyMs: Date.now() - started,
-      estimatedCostUsd: (Math.ceil(text.length / 4) / 1_000_000) * 0.025,
-      success: true,
-    });
-    return values ?? null;
-  } catch (err) {
-    await ownerDb.recordAiUsage({
-      anonymousUserHash,
-      provider: 'gemini',
-      model: config.geminiEmbeddingModel,
-      feature: 'knowledge_base_embedding',
-      modality: 'embedding',
-      inputTokens: Math.ceil(text.length / 4),
-      outputTokens: 0,
-      latencyMs: Date.now() - started,
-      estimatedCostUsd: 0,
-      success: false,
-      errorCode: err instanceof Error ? err.name : 'EMBED_ERROR',
-    });
-    return null;
+function l2Normalize(vec: number[]): number[] {
+  let sumSq = 0;
+  for (let i = 0; i < vec.length; i++) sumSq += vec[i] * vec[i];
+  const norm = Math.sqrt(sumSq);
+  if (norm <= 1e-12) return vec;
+  const out = new Array<number>(vec.length);
+  for (let i = 0; i < vec.length; i++) {
+    out[i] = Math.round((vec[i] / norm) * 100_000) / 100_000;
   }
+  return out;
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length || a.length === 0) return 0;
   let dot = 0;
   let magA = 0;
@@ -182,6 +167,64 @@ function cosineSimilarity(a: number[], b: number[]): number {
   }
   const denom = Math.sqrt(magA) * Math.sqrt(magB);
   return denom > 0 ? dot / denom : 0;
+}
+
+export async function computeEmbeddingIfConfigured(
+  text: string,
+  config: AppConfig,
+  ownerDb: OwnerDatabase,
+  anonymousUserHash?: string,
+  taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY' = 'RETRIEVAL_DOCUMENT',
+): Promise<number[] | null> {
+  if (!config.geminiApiKey) return null;
+  const started = Date.now();
+  const modelsToTry = Array.from(new Set([config.geminiEmbeddingModel || 'gemini-embedding-2', 'gemini-embedding-001']));
+
+  for (const activeModel of modelsToTry) {
+    try {
+      const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
+      const res = await ai.models.embedContent({
+        model: activeModel,
+        contents: text.slice(0, 4000),
+        config: {
+          outputDimensionality: EMBEDDING_DIMS,
+          taskType,
+        },
+      });
+      const rawValues = res.embeddings?.[0]?.values ?? null;
+      if (rawValues && rawValues.length > 0) {
+        const normalized = l2Normalize(rawValues);
+        await ownerDb.recordAiUsage({
+          anonymousUserHash,
+          provider: 'gemini',
+          model: activeModel,
+          feature: 'knowledge_base_embedding',
+          modality: 'embedding',
+          inputTokens: Math.ceil(text.length / 4),
+          outputTokens: 0,
+          latencyMs: Date.now() - started,
+          estimatedCostUsd: (Math.ceil(text.length / 4) / 1_000_000) * 0.025,
+          success: true,
+        });
+        return normalized;
+      }
+    } catch (err) {
+      await ownerDb.recordAiUsage({
+        anonymousUserHash,
+        provider: 'gemini',
+        model: activeModel,
+        feature: 'knowledge_base_embedding',
+        modality: 'embedding',
+        inputTokens: Math.ceil(text.length / 4),
+        outputTokens: 0,
+        latencyMs: Date.now() - started,
+        estimatedCostUsd: 0,
+        success: false,
+        errorCode: err instanceof Error ? err.name : 'EMBED_ERROR',
+      });
+    }
+  }
+  return null;
 }
 
 export async function ingestTechnicalDocument(params: {
@@ -201,6 +244,7 @@ export async function ingestTechnicalDocument(params: {
   documentId: string;
   pageCount: number;
   chunkCount: number;
+  embeddedChunkCount: number;
   summary: string;
 }> {
   const { customerDb, ownerDb, config, userId, anonymousUserHash, deviceId, title, filename, mimeType, buffer, detectedKind } = params;
@@ -233,18 +277,34 @@ export async function ingestTechnicalDocument(params: {
     now,
   );
 
-  // Embed up to first 20 chunks when Gemini API is active so uploads remain fast
-  for (const ch of chunks) {
-    const chunkId = crypto.randomUUID();
-    const embedding =
-      ch.chunkIndex < 20
-        ? await computeEmbeddingIfConfigured(
+  // Batch-embed up to 40 chunks concurrently (batches of 5) using gemini-embedding-2 (768d)
+  const embeddingsByIndex = new Map<number, number[] | null>();
+  const maxEmbedChunks = Math.min(chunks.length, 40);
+  if (config.geminiApiKey && maxEmbedChunks > 0) {
+    const batchSize = 5;
+    for (let i = 0; i < maxEmbedChunks; i += batchSize) {
+      const slice = chunks.slice(i, Math.min(i + batchSize, maxEmbedChunks));
+      const results = await Promise.all(
+        slice.map((ch) =>
+          computeEmbeddingIfConfigured(
             `${title} — ${ch.sectionHeading}\n${ch.content}`,
             config,
             ownerDb,
             anonymousUserHash,
-          )
-        : null;
+            'RETRIEVAL_DOCUMENT',
+          ),
+        ),
+      );
+      slice.forEach((ch, idx) => embeddingsByIndex.set(ch.chunkIndex, results[idx]));
+    }
+  }
+
+  let embeddedChunkCount = 0;
+  for (const ch of chunks) {
+    const chunkId = crypto.randomUUID();
+    const embedding = embeddingsByIndex.get(ch.chunkIndex) ?? null;
+    if (embedding) embeddedChunkCount += 1;
+
     await customerDb.db.run(
       `INSERT INTO document_chunks (
         id, document_id, user_id, chunk_index, page_number, section_heading,
@@ -279,9 +339,123 @@ export async function ingestTechnicalDocument(params: {
   await customerDb.recordAudit(userId, 'document_uploaded', 'document', docId, {
     pageCount: pages.length,
     chunkCount: chunks.length,
+    embeddedChunkCount,
   });
 
-  return { documentId: docId, pageCount: pages.length, chunkCount: chunks.length, summary };
+  return { documentId: docId, pageCount: pages.length, chunkCount: chunks.length, embeddedChunkCount, summary };
+}
+
+export async function reembedUserDocuments(params: {
+  customerDb: CustomerDatabase;
+  ownerDb: OwnerDatabase;
+  config: AppConfig;
+  userId: string;
+  anonymousUserHash?: string;
+  maxChunks?: number;
+}): Promise<{ embeddedNow: number; remainingUnembedded: number; totalChunks: number }> {
+  const { customerDb, ownerDb, config, userId, anonymousUserHash, maxChunks = 50 } = params;
+  const totalRow = await customerDb.db.get<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM document_chunks dc
+     JOIN documents d ON d.id = dc.document_id
+     WHERE dc.user_id = ? AND d.deleted_at IS NULL`,
+    userId,
+  );
+  const totalChunks = Number(totalRow?.c ?? 0);
+
+  if (!config.geminiApiKey) {
+    const missingRow = await customerDb.db.get<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM document_chunks dc
+       JOIN documents d ON d.id = dc.document_id
+       WHERE dc.user_id = ? AND d.deleted_at IS NULL AND dc.embedding_json IS NULL`,
+      userId,
+    );
+    return { embeddedNow: 0, remainingUnembedded: Number(missingRow?.c ?? 0), totalChunks };
+  }
+
+  const pending = await customerDb.db.all<{
+    id: string;
+    title: string;
+    section_heading: string;
+    content: string;
+  }>(
+    `SELECT dc.id, d.title, dc.section_heading, dc.content
+     FROM document_chunks dc
+     JOIN documents d ON d.id = dc.document_id
+     WHERE dc.user_id = ? AND d.deleted_at IS NULL AND dc.embedding_json IS NULL
+     LIMIT ?`,
+    userId,
+    maxChunks,
+  );
+
+  let embeddedNow = 0;
+  const batchSize = 5;
+  for (let i = 0; i < pending.length; i += batchSize) {
+    const slice = pending.slice(i, i + batchSize);
+    const vecs = await Promise.all(
+      slice.map((row) =>
+        computeEmbeddingIfConfigured(
+          `${row.title} — ${row.section_heading}\n${row.content}`,
+          config,
+          ownerDb,
+          anonymousUserHash,
+          'RETRIEVAL_DOCUMENT',
+        ),
+      ),
+    );
+    for (let j = 0; j < slice.length; j++) {
+      if (vecs[j]) {
+        await customerDb.db.run('UPDATE document_chunks SET embedding_json = ? WHERE id = ?', JSON.stringify(vecs[j]), slice[j].id);
+        embeddedNow += 1;
+      }
+    }
+  }
+
+  const remainingRow = await customerDb.db.get<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM document_chunks dc
+     JOIN documents d ON d.id = dc.document_id
+     WHERE dc.user_id = ? AND d.deleted_at IS NULL AND dc.embedding_json IS NULL`,
+    userId,
+  );
+
+  return {
+    embeddedNow,
+    remainingUnembedded: Number(remainingRow?.c ?? 0),
+    totalChunks,
+  };
+}
+
+export async function getUserRagStats(
+  customerDb: CustomerDatabase,
+  config: AppConfig,
+  userId: string,
+): Promise<UserRagStats> {
+  const docRow = await customerDb.db.get<{ c: number }>(
+    'SELECT COUNT(*) AS c FROM documents WHERE user_id = ? AND deleted_at IS NULL',
+    userId,
+  );
+  const chunkRow = await customerDb.db.get<{ total: number; embedded: number }>(
+    `SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN dc.embedding_json IS NOT NULL THEN 1 ELSE 0 END) AS embedded
+     FROM document_chunks dc
+     JOIN documents d ON d.id = dc.document_id
+     WHERE dc.user_id = ? AND d.deleted_at IS NULL`,
+    userId,
+  );
+  const totalChunks = Number(chunkRow?.total ?? 0);
+  const embeddedChunks = Number(chunkRow?.embedded ?? 0);
+  const coverage = totalChunks > 0 ? Math.round((embeddedChunks / totalChunks) * 1000) / 10 : 0;
+
+  return {
+    documentCount: Number(docRow?.c ?? 0),
+    totalChunks,
+    embeddedChunks,
+    embeddingCoveragePercent: coverage,
+    embeddingModel: config.geminiEmbeddingModel || 'gemini-embedding-2',
+    embeddingDimensions: EMBEDDING_DIMS,
+    fusionMethod: 'Reciprocal Rank Fusion (RRF k=60: FTS Lexical + 768d Cosine Vector)',
+    vectorSearchActive: Boolean(config.geminiApiKey) && embeddedChunks > 0,
+  };
 }
 
 function extractQueryTokens(rawQuery: string): string[] {
@@ -297,6 +471,25 @@ function extractQueryTokens(rawQuery: string): string[] {
     .slice(0, 12);
 }
 
+/**
+ * Pure Reciprocal Rank Fusion (RRF, Cormack et al.) helper exported for deterministic unit tests & live hybrid search.
+ */
+export function computeHybridRrfScore(params: {
+  lexicalRank: number | null; // 1-based rank, or null if not matched lexically
+  vectorRank: number | null;  // 1-based rank, or null if not matched semantically
+  k?: number;
+}): number {
+  const k = params.k ?? RRF_K;
+  let score = 0;
+  if (params.lexicalRank !== null && params.lexicalRank >= 1) {
+    score += 1 / (k + params.lexicalRank);
+  }
+  if (params.vectorRank !== null && params.vectorRank >= 1) {
+    score += 1 / (k + params.vectorRank);
+  }
+  return Math.round(score * 100_000) / 100_000;
+}
+
 export async function searchUserKnowledgeBase(params: {
   customerDb: CustomerDatabase;
   ownerDb: OwnerDatabase;
@@ -308,10 +501,11 @@ export async function searchUserKnowledgeBase(params: {
   limit?: number;
 }): Promise<RetrievedCitation[]> {
   const { customerDb, ownerDb, config, userId, anonymousUserHash, query, limit = 5 } = params;
-  const tokens = extractQueryTokens(query);
-  if (tokens.length === 0) return [];
+  const trimmedQuery = query.trim();
+  if (trimmedQuery.length < 2) return [];
+  const tokens = extractQueryTokens(trimmedQuery);
 
-  type SearchRow = {
+  type ChunkCandidate = {
     chunk_id: string;
     document_id: string;
     document_title: string;
@@ -322,44 +516,46 @@ export async function searchUserKnowledgeBase(params: {
     has_command_block: number;
     content: string;
     embedding_json: string | null;
-    bm25_rank: number;
+    bm25_rank?: number;
   };
 
-  let rows: SearchRow[];
-  if (customerDb.db.dialect === 'postgres') {
-    const pgTsQuery = tokens.map((t) => t.replace(/[^a-z0-9]/g, '')).filter(Boolean).join(' | ');
-    if (!pgTsQuery) return [];
-    rows = await customerDb.db.all<SearchRow>(
-      `SELECT
-        dc.id AS chunk_id,
-        dc.document_id,
-        d.title AS document_title,
-        d.doc_version,
-        dc.page_number,
-        dc.section_heading,
-        dc.has_table,
-        dc.has_command_block,
-        dc.content,
-        dc.embedding_json,
-        -ts_rank(
-          to_tsvector('english', d.title || ' ' || dc.section_heading || ' ' || dc.content),
-          to_tsquery('english', ?)
-        ) AS bm25_rank
-      FROM document_chunks dc
-      JOIN documents d ON d.id = dc.document_id
-      WHERE to_tsvector('english', d.title || ' ' || dc.section_heading || ' ' || dc.content) @@ to_tsquery('english', ?)
-        AND dc.user_id = ?
-        AND d.deleted_at IS NULL
-      ORDER BY bm25_rank ASC
-      LIMIT ?`,
-      pgTsQuery,
-      pgTsQuery,
-      userId,
-      limit * 3,
-    );
-  } else {
+  // Channel A: Lexical FTS Search (Postgres GIN tsvector / SQLite FTS5 BM25)
+  const runLexicalSearch = async (): Promise<ChunkCandidate[]> => {
+    if (tokens.length === 0) return [];
+    if (customerDb.db.dialect === 'postgres') {
+      const pgTsQuery = tokens.map((t) => t.replace(/[^a-z0-9]/g, '')).filter(Boolean).join(' | ');
+      if (!pgTsQuery) return [];
+      return customerDb.db.all<ChunkCandidate>(
+        `SELECT
+          dc.id AS chunk_id,
+          dc.document_id,
+          d.title AS document_title,
+          d.doc_version,
+          dc.page_number,
+          dc.section_heading,
+          dc.has_table,
+          dc.has_command_block,
+          dc.content,
+          dc.embedding_json,
+          -ts_rank(
+            to_tsvector('english', d.title || ' ' || dc.section_heading || ' ' || dc.content),
+            to_tsquery('english', ?)
+          ) AS bm25_rank
+        FROM document_chunks dc
+        JOIN documents d ON d.id = dc.document_id
+        WHERE to_tsvector('english', d.title || ' ' || dc.section_heading || ' ' || dc.content) @@ to_tsquery('english', ?)
+          AND dc.user_id = ?
+          AND d.deleted_at IS NULL
+        ORDER BY bm25_rank ASC
+        LIMIT ?`,
+        pgTsQuery,
+        pgTsQuery,
+        userId,
+        limit * 4,
+      );
+    }
     const ftsQuery = tokens.map((t) => `"${t}"`).join(' OR ');
-    rows = await customerDb.db.all<SearchRow>(
+    return customerDb.db.all<ChunkCandidate>(
       `SELECT
         dc.id AS chunk_id,
         dc.document_id,
@@ -382,46 +578,145 @@ export async function searchUserKnowledgeBase(params: {
       LIMIT ?`,
       ftsQuery,
       userId,
-      limit * 3,
+      limit * 4,
     );
-  }
+  };
 
-  if (rows.length === 0) return [];
+  // Channel B: Dense Semantic Vector Retrieval (works even when 0 keywords overlap!)
+  const runSemanticSearch = async (): Promise<Array<{ row: ChunkCandidate; similarity: number }>> => {
+    if (!config.geminiApiKey) return [];
+    const embeddedRows = await customerDb.db.all<ChunkCandidate>(
+      `SELECT
+        dc.id AS chunk_id,
+        dc.document_id,
+        d.title AS document_title,
+        d.doc_version,
+        dc.page_number,
+        dc.section_heading,
+        dc.has_table,
+        dc.has_command_block,
+        dc.content,
+        dc.embedding_json
+      FROM document_chunks dc
+      JOIN documents d ON d.id = dc.document_id
+      WHERE dc.user_id = ?
+        AND d.deleted_at IS NULL
+        AND dc.embedding_json IS NOT NULL
+      LIMIT 400`,
+      userId,
+    );
+    if (embeddedRows.length === 0) return [];
 
-  let queryEmbedding: number[] | null = null;
-  if (config.geminiApiKey && rows.some((r) => r.embedding_json)) {
-    queryEmbedding = await computeEmbeddingIfConfigured(query, config, ownerDb, anonymousUserHash);
-  }
+    const queryEmbedding = await computeEmbeddingIfConfigured(
+      trimmedQuery,
+      config,
+      ownerDb,
+      anonymousUserHash,
+      'RETRIEVAL_QUERY',
+    );
+    if (!queryEmbedding) return [];
 
-  const scored = rows.map((r) => {
-    const bm25Score = 1 / (1 + Math.abs(r.bm25_rank || 0));
-    let semanticScore = 0;
-    if (queryEmbedding && r.embedding_json) {
+    const scoredVecs: Array<{ row: ChunkCandidate; similarity: number }> = [];
+    for (const row of embeddedRows) {
+      if (!row.embedding_json) continue;
       try {
-        semanticScore = cosineSimilarity(queryEmbedding, JSON.parse(r.embedding_json) as number[]);
+        const vec = JSON.parse(row.embedding_json) as number[];
+        const sim = cosineSimilarity(queryEmbedding, vec);
+        if (sim >= 0.36) {
+          scoredVecs.push({ row, similarity: sim });
+        }
       } catch {
-        semanticScore = 0;
+        // skip malformed vector
       }
     }
-    const combined = queryEmbedding ? bm25Score * 0.45 + semanticScore * 0.55 : bm25Score;
-    const { sanitized, flaggedInjectionAttempt } = sanitizeUntrustedDocumentExcerpt(r.content);
-    return {
-      documentId: r.document_id,
-      documentTitle: r.document_title,
-      docVersion: r.doc_version,
-      chunkId: r.chunk_id,
-      pageNumber: r.page_number,
-      sectionHeading: r.section_heading,
-      excerpt: sanitized.slice(0, 600),
-      hasTable: r.has_table === 1,
-      hasCommandBlock: r.has_command_block === 1,
-      relevanceScore: Math.round(combined * 1000) / 1000,
-      flaggedInjectionAttempt,
-    };
+    scoredVecs.sort((a, b) => b.similarity - a.similarity);
+    return scoredVecs.slice(0, limit * 4);
+  };
+
+  const [lexicalRows, vectorHits] = await Promise.all([runLexicalSearch(), runSemanticSearch()]);
+
+  if (lexicalRows.length === 0 && vectorHits.length === 0) return [];
+
+  // Merge candidates via Reciprocal Rank Fusion (RRF, k = 60)
+  const merged = new Map<
+    string,
+    {
+      row: ChunkCandidate;
+      lexicalRank: number | null;
+      lexicalScore: number | null;
+      vectorRank: number | null;
+      semanticSimilarity: number | null;
+    }
+  >();
+
+  lexicalRows.forEach((row, idx) => {
+    const lexScore = Math.round((1 / (1 + Math.abs(row.bm25_rank || 0))) * 1000) / 1000;
+    merged.set(row.chunk_id, {
+      row,
+      lexicalRank: idx + 1,
+      lexicalScore: lexScore,
+      vectorRank: null,
+      semanticSimilarity: null,
+    });
   });
 
-  scored.sort((a, b) => b.relevanceScore - a.relevanceScore);
-  return scored.slice(0, limit);
+  vectorHits.forEach((hit, idx) => {
+    const existing = merged.get(hit.row.chunk_id);
+    const roundedSim = Math.round(hit.similarity * 1000) / 1000;
+    if (existing) {
+      existing.vectorRank = idx + 1;
+      existing.semanticSimilarity = roundedSim;
+    } else if (hit.similarity >= 0.42) {
+      // Semantic-only match (zero exact keyword overlap required!)
+      merged.set(hit.row.chunk_id, {
+        row: hit.row,
+        lexicalRank: null,
+        lexicalScore: null,
+        vectorRank: idx + 1,
+        semanticSimilarity: roundedSim,
+      });
+    }
+  });
+
+  const maxPossibleRrf = 2 / (RRF_K + 1);
+  const results: RetrievedCitation[] = [];
+
+  for (const entry of merged.values()) {
+    const rrf = computeHybridRrfScore({
+      lexicalRank: entry.lexicalRank,
+      vectorRank: entry.vectorRank,
+    });
+    const matchMode: RetrievalMatchMode =
+      entry.lexicalRank !== null && entry.vectorRank !== null
+        ? 'hybrid_rrf'
+        : entry.vectorRank !== null
+          ? 'semantic_vector'
+          : 'lexical_fts';
+
+    // Normalize fused score cleanly to 0..1 scale for readable UI display
+    const normalizedScore = Math.min(1, Math.round((rrf / maxPossibleRrf) * 1000) / 1000);
+    const { sanitized, flaggedInjectionAttempt } = sanitizeUntrustedDocumentExcerpt(entry.row.content);
+
+    results.push({
+      documentId: entry.row.document_id,
+      documentTitle: entry.row.document_title,
+      docVersion: entry.row.doc_version,
+      chunkId: entry.row.chunk_id,
+      pageNumber: entry.row.page_number,
+      sectionHeading: entry.row.section_heading,
+      excerpt: sanitized.slice(0, 600),
+      hasTable: entry.row.has_table === 1,
+      hasCommandBlock: entry.row.has_command_block === 1,
+      relevanceScore: normalizedScore,
+      matchMode,
+      lexicalScore: entry.lexicalScore,
+      semanticSimilarity: entry.semanticSimilarity,
+      flaggedInjectionAttempt,
+    });
+  }
+
+  results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+  return results.slice(0, limit);
 }
 
 export async function deleteUserDocument(

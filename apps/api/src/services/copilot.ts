@@ -69,6 +69,17 @@ export interface CopilotTurnInput {
   anonymousUserHash?: string;
 }
 
+export interface CopilotStreamCallbacks {
+  onMeta?: (meta: {
+    provider: string;
+    model: string;
+    citations: RetrievedCitation[];
+    safetyFlags: Array<{ code: string; title: string; severity: string }>;
+  }) => void;
+  onDelta?: (deltaText: string) => void;
+  onVision?: (inspection: StructuredPcbInspection) => void;
+}
+
 export interface CopilotTurnOutput {
   assistantReply: string;
   aiProvider: string;
@@ -134,6 +145,7 @@ function buildSystemInstruction(
     '5. NEVER invent manual citations or part specifications. Cite uploaded documents as [Document Title, p. X] only when present in UNTRUSTED_REFERENCE_MATERIAL.',
     '6. Hardware Safety: Never give casual DIY instructions for high-voltage mains/PSU capacitors, swollen/punctured lithium batteries, or live liquid-damaged devices.',
     '7. Resolution Verification: Never declare an issue resolved solely because a step was tried; ask for fresh measurements or symptom re-verification.',
+    '8. Always write a concise, helpful diagnostic explanation (citing relevant manuals and explaining what the check will reveal) even when requesting a diagnostic tool — never return a silent tool-only response.',
     citationBlock,
   ].join('\n');
 }
@@ -1026,8 +1038,10 @@ async function callGeminiCopilot(
   systemInstruction: string,
   userPrompt: string,
   imageAttachment: CopilotTurnInput['imageAttachment'],
+  onDelta?: (deltaText: string) => void,
 ): Promise<{
   text: string;
+  usedModel: string;
   inputTokens: number;
   outputTokens: number;
   modelToolCalls: Array<{ toolId: string; parameters: Record<string, unknown> }>;
@@ -1057,14 +1071,92 @@ async function callGeminiCopilot(
     },
   }));
 
-  // Use modern @google/genai v1 GA Interactions API (UserInputStep schema) with validated tool registry + bounded 22s failover
   const candidateModels = Array.from(new Set([model, 'gemini-3.5-flash-lite']));
+  let lastErr: unknown = null;
+
+  // Real-time token streaming path via Interactions API stream: true
+  if (onDelta) {
+    for (const activeModel of candidateModels) {
+      let emittedAnyText = false;
+      try {
+        const stream = await new Promise<AsyncIterable<Record<string, unknown>>>((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error(`Gemini stream open (${activeModel}) timed out`)), 18_000);
+          ai.interactions
+            .create({
+              model: activeModel,
+              system_instruction: systemInstruction,
+              input: [{ type: 'user_input', content: contentBlocks }] as unknown as string,
+              tools: toolDeclarations as unknown as undefined,
+              stream: true,
+            })
+            .then(
+              (s) => {
+                clearTimeout(timer);
+                resolve(s as unknown as AsyncIterable<Record<string, unknown>>);
+              },
+              (e) => {
+                clearTimeout(timer);
+                reject(e);
+              },
+            );
+        });
+
+        let accumulatedText = '';
+        const modelToolCalls: Array<{ toolId: string; parameters: Record<string, unknown> }> = [];
+        let inTok: number | undefined;
+        let outTok: number | undefined;
+
+        for await (const ev of stream) {
+          const eventType = String(ev.event_type || '');
+          if (eventType === 'step.delta') {
+            const delta = ev.delta as { type?: string; text?: string } | undefined;
+            if (delta?.type === 'text' && delta.text) {
+              emittedAnyText = true;
+              accumulatedText += delta.text;
+              onDelta(delta.text);
+            }
+          } else if (eventType === 'interaction.completed') {
+            const inter = ev.interaction as
+              | {
+                  steps?: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }>;
+                  usage?: { input_tokens?: number; output_tokens?: number };
+                }
+              | undefined;
+            if (Array.isArray(inter?.steps)) {
+              for (const step of inter.steps) {
+                if (step.type === 'function_call' && step.name && VALID_TOOL_IDS.has(step.name)) {
+                  modelToolCalls.push({ toolId: step.name, parameters: step.arguments || {} });
+                }
+              }
+            }
+            inTok = inter?.usage?.input_tokens;
+            outTok = inter?.usage?.output_tokens;
+          }
+        }
+
+        return {
+          text: accumulatedText,
+          usedModel: activeModel,
+          inputTokens: inTok ?? estimateTokenCount(systemInstruction + userPrompt),
+          outputTokens: outTok ?? estimateTokenCount(accumulatedText),
+          modelToolCalls,
+        };
+      } catch (err) {
+        lastErr = err;
+        if (emittedAnyText) throw err; // Do not duplicate partial output if stream dropped mid-sentence
+      }
+    }
+    throw lastErr ?? new Error('Gemini streaming interaction failed');
+  }
+
+  // Unary non-streaming path with bounded 22s failover
   let interaction: {
     output_text?: string | null;
     steps?: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }>;
     usage?: { input_tokens?: number; output_tokens?: number };
   } | null = null;
-  let lastErr: unknown = null;
+  let usedModel = model;
+
   for (const activeModel of candidateModels) {
     try {
       interaction = await new Promise((resolve, reject) => {
@@ -1087,6 +1179,7 @@ async function callGeminiCopilot(
             },
           );
       });
+      usedModel = activeModel;
       break;
     } catch (err) {
       lastErr = err;
@@ -1095,9 +1188,7 @@ async function callGeminiCopilot(
   if (!interaction) throw lastErr ?? new Error('Gemini interaction failed');
 
   const modelToolCalls: Array<{ toolId: string; parameters: Record<string, unknown> }> = [];
-  const steps = (interaction as unknown as {
-    steps?: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }>;
-  }).steps;
+  const steps = interaction.steps;
   if (Array.isArray(steps)) {
     for (const step of steps) {
       if (step.type === 'function_call' && step.name && VALID_TOOL_IDS.has(step.name)) {
@@ -1110,9 +1201,10 @@ async function callGeminiCopilot(
   }
 
   const text = interaction.output_text || '';
-  const usage = (interaction as unknown as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+  const usage = interaction.usage;
   return {
     text,
+    usedModel,
     inputTokens: usage?.input_tokens ?? estimateTokenCount(systemInstruction + userPrompt),
     outputTokens: usage?.output_tokens ?? estimateTokenCount(text),
     modelToolCalls,
@@ -1251,9 +1343,26 @@ async function callOpenAiCompatibleCopilot(
 }
 
 // ============================================================================
-// Main Copilot Turn Orchestrator
+// Main Copilot Turn Orchestrator (Supports both Unary JSON & Live SSE Streaming)
 // ============================================================================
-export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTurnOutput> {
+function emitProgressiveText(fullText: string, onDelta?: (chunk: string) => void): void {
+  if (!onDelta || !fullText) return;
+  const words = fullText.split(/(\s+)/);
+  let buf = '';
+  for (const w of words) {
+    buf += w;
+    if (buf.length >= 28) {
+      onDelta(buf);
+      buf = '';
+    }
+  }
+  if (buf) onDelta(buf);
+}
+
+export async function runCopilotTurn(
+  input: CopilotTurnInput,
+  callbacks?: CopilotStreamCallbacks,
+): Promise<CopilotTurnOutput> {
   const started = Date.now();
   const safety = evaluateHardwareSafety(input.userMessage);
   const insights = extractDiagnosticInsights(input);
@@ -1273,6 +1382,13 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
   // If critical safety block triggered, return deterministic safety refusal immediately
   if (safety.blockDirectRepairInstructions) {
     const reply = composeLocalDiagnosticReply(input, insights, safety);
+    callbacks?.onMeta?.({
+      provider: 'coresense-safety-gate',
+      model: 'hardware-safety-policy-v1',
+      citations: input.retrievedCitations,
+      safetyFlags,
+    });
+    emitProgressiveText(reply, callbacks?.onDelta);
     await input.ownerDb.recordAiUsage({
       anonymousUserHash: input.anonymousUserHash,
       provider: 'coresense-safety-gate',
@@ -1331,6 +1447,13 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
     }
   }
 
+  callbacks?.onMeta?.({
+    provider,
+    model,
+    citations: input.retrievedCitations,
+    safetyFlags,
+  });
+
   let assistantReply = '';
   let inputTokens = estimateTokenCount(input.userMessage);
   let outputTokens = 0;
@@ -1345,6 +1468,9 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
         model,
         userMessage: input.userMessage,
         imageAttachment: input.imageAttachment,
+      }).then((vr) => {
+        callbacks?.onVision?.(vr.inspection);
+        return vr;
       })
     : null;
 
@@ -1373,10 +1499,20 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
 
     try {
       if (provider === 'gemini') {
-        const res = await callGeminiCopilot(apiKey, model, systemInstruction, contextDigest, input.imageAttachment);
-        assistantReply =
-          res.text.trim() ||
-          'Requested validated diagnostic tool execution below to gather direct measurements before finalizing root cause.';
+        const res = await callGeminiCopilot(
+          apiKey,
+          model,
+          systemInstruction,
+          contextDigest,
+          input.imageAttachment,
+          callbacks?.onDelta,
+        );
+        model = res.usedModel;
+        const trimmedReply = res.text.trim();
+        assistantReply = trimmedReply || composeLocalDiagnosticReply(input, insights, safety);
+        if (!trimmedReply && callbacks?.onDelta) {
+          emitProgressiveText(assistantReply, callbacks.onDelta);
+        }
         inputTokens = res.inputTokens;
         outputTokens = res.outputTokens;
         for (const call of res.modelToolCalls) {
@@ -1407,6 +1543,7 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
           input.imageAttachment,
         );
         assistantReply = res.text.trim();
+        emitProgressiveText(assistantReply, callbacks?.onDelta);
         inputTokens = res.inputTokens;
         outputTokens = res.outputTokens;
       }
@@ -1443,10 +1580,12 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
       assistantReply =
         `_Note: External AI provider was temporarily unreachable; CoreSense Local Diagnostic Engine handled this turn without interrupting your investigation._\n\n` +
         composeLocalDiagnosticReply(input, insights, safety);
+      emitProgressiveText(assistantReply, callbacks?.onDelta);
       outputTokens = estimateTokenCount(assistantReply);
     }
   } else {
     assistantReply = composeLocalDiagnosticReply(input, insights, safety);
+    emitProgressiveText(assistantReply, callbacks?.onDelta);
     outputTokens = estimateTokenCount(assistantReply);
     await input.ownerDb.recordAiUsage({
       anonymousUserHash: input.anonymousUserHash,

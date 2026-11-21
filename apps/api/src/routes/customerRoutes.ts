@@ -38,12 +38,16 @@ import {
 } from '../security/crypto.js';
 import {
   deleteUserDocument,
+  getUserRagStats,
   ingestTechnicalDocument,
+  reembedUserDocuments,
   searchUserKnowledgeBase,
 } from '../services/rag.js';
 import { inspectImageBuffer, saveUserAttachment } from '../services/imageInspector.js';
 import { analyzeTelemetryHealth } from '../services/anomalyEngine.js';
+import { buildAiMlLabOverview, runLiveAiMlBenchmark } from '../services/mlEvalLab.js';
 import {
+  type CopilotStreamCallbacks,
   type ProposedToolCall,
   runCopilotTurn,
   testAiProviderConnection,
@@ -283,14 +287,14 @@ export function registerCustomerRoutes(
       desktop: {
         version: String(map.get('latestDesktopVersion') || CORESENSE_VERSION),
         releaseDate: '2026-11-22',
-        releaseUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/tag/v1.1.0',
-        notes: 'CoreSense v1.1.0 — Full Hardware Expansion (Desktop GPU, USB/Bluetooth/Audio PnP Faults, Stress Benchmarks + Mobile Wi-Fi/Hotspot & SoC Thermal-Throttling Test) and AI/ML Upgrades (Predictive MAD Anomaly Scoring, OLS Degradation Forecasting, Structured Vision PCB Inspector).',
+        releaseUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/tag/v1.2.0',
+        notes: 'CoreSense v1.2.0 — Hybrid Vector + Lexical RRF RAG (768d gemini-embedding-2), Real-Time SSE Streaming Gemini 4 Copilot, Interactive AI/ML Evaluation & Telemetry Lab, Full Hardware Diagnostics (Desktop GPU/USB/BT/Audio/Stress + Mobile Wi-Fi/Hotspot/SoC), and Structured PCB Vision Inspector.',
         installers: {
-          windowsNsis: 'CoreSense_1.1.0_x64-setup.exe',
-          windowsMsi: 'CoreSense_1.1.0_x64_en-US.msi',
-          macosDmg: 'CoreSense_1.1.0_aarch64.dmg',
-          linuxDeb: 'CoreSense_1.1.0_amd64.deb',
-          linuxAppImage: 'CoreSense_1.1.0_amd64.AppImage',
+          windowsNsis: 'CoreSense_1.2.0_x64-setup.exe',
+          windowsMsi: 'CoreSense_1.2.0_x64_en-US.msi',
+          macosDmg: 'CoreSense_1.2.0_aarch64.dmg',
+          linuxDeb: 'CoreSense_1.2.0_amd64.deb',
+          linuxAppImage: 'CoreSense_1.2.0_amd64.AppImage',
         },
       },
       mobile: {
@@ -1082,6 +1086,7 @@ export function registerCustomerRoutes(
     imageBase64?: string;
     imageMimeType?: string;
     imageFilename?: string;
+    streamCallbacks?: CopilotStreamCallbacks;
   }) => {
     const { user, req, investigationId, messageText, inputModality, snapshotIds } = params;
     const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', investigationId, user.id)) as Record<string, unknown>;
@@ -1183,32 +1188,35 @@ export function registerCustomerRoutes(
         ? analyzeTelemetryHealth(recentSnaps, { deviceId: inv.device_id ? String(inv.device_id) : null })
         : null;
 
-    const turnOut = await runCopilotTurn({
-      userMessage: messageText,
-      deviceProfile: deviceRow
-        ? {
-            name: String(deviceRow.name),
-            category: String(deviceRow.category),
-            manufacturer: String(deviceRow.manufacturer),
-            model: String(deviceRow.model),
-            osName: deviceRow.os_name ? String(deviceRow.os_name) : null,
-            osVersion: deviceRow.os_version ? String(deviceRow.os_version) : null,
-            specs: JSON.parse(String(deviceRow.specs_json || '{}')),
-          }
-        : null,
-      history: historyRows,
-      existingEvidence,
-      existingHypotheses,
-      attachedSnapshots,
-      healthAnalysis,
-      retrievedCitations,
-      imageAttachment,
-      externalAiConsent: user.external_ai_consent === 1,
-      byokConfig,
-      config,
-      ownerDb,
-      anonymousUserHash: anonHash,
-    });
+    const turnOut = await runCopilotTurn(
+      {
+        userMessage: messageText,
+        deviceProfile: deviceRow
+          ? {
+              name: String(deviceRow.name),
+              category: String(deviceRow.category),
+              manufacturer: String(deviceRow.manufacturer),
+              model: String(deviceRow.model),
+              osName: deviceRow.os_name ? String(deviceRow.os_name) : null,
+              osVersion: deviceRow.os_version ? String(deviceRow.os_version) : null,
+              specs: JSON.parse(String(deviceRow.specs_json || '{}')),
+            }
+          : null,
+        history: historyRows,
+        existingEvidence,
+        existingHypotheses,
+        attachedSnapshots,
+        healthAnalysis,
+        retrievedCitations,
+        imageAttachment,
+        externalAiConsent: user.external_ai_consent === 1,
+        byokConfig,
+        config,
+        ownerDb,
+        anonymousUserHash: anonHash,
+      },
+      params.streamCallbacks,
+    );
 
     const assistantMsgId = crypto.randomUUID();
     const replyTime = new Date().toISOString();
@@ -1373,6 +1381,102 @@ export function registerCustomerRoutes(
     });
   });
 
+  // Helper to configure SSE response cleanly (compatible with CORS + Vite + Render proxies)
+  const openSseStream = (req: FastifyRequest, reply: FastifyReply) => {
+    const origin = req.headers.origin;
+    reply.hijack();
+    const raw = reply.raw;
+    const headers: Record<string, string> = {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    };
+    if (origin) {
+      headers['Access-Control-Allow-Origin'] = origin;
+      headers['Access-Control-Allow-Credentials'] = 'true';
+      headers.Vary = 'Origin';
+    }
+    raw.writeHead(200, headers);
+    const sendEvent = (eventName: string, payload: unknown) => {
+      if (!raw.writableEnded) {
+        raw.write(`event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
+      }
+    };
+    const end = () => {
+      if (!raw.writableEnded) raw.end();
+    };
+    return { sendEvent, end };
+  };
+
+  // Real-time SSE Streaming Investigation Start
+  app.post('/api/v1/investigations/stream', { preHandler: requireCustomerAuth }, async (req, reply) => {
+    const schema = z.object({
+      title: z.string().min(2).max(160).optional(),
+      initialSymptom: z.string().min(2).max(4000),
+      deviceId: z.string().optional(),
+      inputModality: z.enum(['text', 'voice', 'image']).default('text'),
+      snapshotIds: z.array(z.string()).default([]),
+      imageBase64: z.string().optional(),
+      imageMimeType: z.string().optional(),
+      imageFilename: z.string().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    const user = req.customerUser!;
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const title = parsed.data.title || parsed.data.initialSymptom.slice(0, 72);
+
+    await customerDb.db.run(
+      `INSERT INTO investigations (
+        id, user_id, device_id, title, initial_symptom,
+        status, revision, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?)`,
+      id,
+      user.id,
+      parsed.data.deviceId ?? null,
+      title,
+      parsed.data.initialSymptom,
+      now,
+      now,
+    );
+    await emitUserTelemetry(user, 'investigation_started', req);
+
+    const sse = openSseStream(req, reply);
+    try {
+      const turnResult = await executeInvestigationTurn({
+        user,
+        req,
+        investigationId: id,
+        messageText: parsed.data.initialSymptom,
+        inputModality: parsed.data.inputModality,
+        snapshotIds: parsed.data.snapshotIds,
+        imageBase64: parsed.data.imageBase64,
+        imageMimeType: parsed.data.imageMimeType,
+        imageFilename: parsed.data.imageFilename,
+        streamCallbacks: {
+          onMeta: (meta) =>
+            sse.sendEvent('meta', {
+              investigation: { id, title, deviceId: parsed.data.deviceId ?? null, status: 'active', createdAt: now },
+              ...meta,
+            }),
+          onDelta: (text) => sse.sendEvent('delta', { text }),
+          onVision: (structuredInspection) => sse.sendEvent('vision', { structuredInspection }),
+        },
+      });
+      sse.sendEvent('done', {
+        investigation: { id, title, deviceId: parsed.data.deviceId ?? null, status: 'active', createdAt: now },
+        ...turnResult,
+      });
+    } catch (err) {
+      sse.sendEvent('error', { error: err instanceof Error ? err.message : 'Streaming turn failed' });
+    } finally {
+      sse.end();
+    }
+  });
+
   app.get('/api/v1/investigations/:id', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const inv = (await customerDb.db.get('SELECT * FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id)) as Record<string, unknown> | undefined;
@@ -1448,6 +1552,49 @@ export function registerCustomerRoutes(
       imageFilename: parsed.data.imageFilename,
     });
     return out;
+  });
+
+  // Real-time SSE Streaming Follow-Up Message
+  app.post('/api/v1/investigations/:id/messages/stream', { preHandler: requireCustomerAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const inv = await customerDb.db.get('SELECT id, title FROM investigations WHERE id = ? AND user_id = ? AND deleted_at IS NULL', id, req.customerUser!.id) as { id: string; title: string } | undefined;
+    if (!inv) return reply.code(404).send({ error: 'Investigation not found' });
+
+    const schema = z.object({
+      message: z.string().min(1).max(6000),
+      inputModality: z.enum(['text', 'voice', 'image']).default('text'),
+      snapshotIds: z.array(z.string()).default([]),
+      imageBase64: z.string().optional(),
+      imageMimeType: z.string().optional(),
+      imageFilename: z.string().optional(),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    const sse = openSseStream(req, reply);
+    try {
+      const out = await executeInvestigationTurn({
+        user: req.customerUser!,
+        req,
+        investigationId: id,
+        messageText: parsed.data.message,
+        inputModality: parsed.data.inputModality,
+        snapshotIds: parsed.data.snapshotIds,
+        imageBase64: parsed.data.imageBase64,
+        imageMimeType: parsed.data.imageMimeType,
+        imageFilename: parsed.data.imageFilename,
+        streamCallbacks: {
+          onMeta: (meta) => sse.sendEvent('meta', { investigationId: id, title: inv.title, ...meta }),
+          onDelta: (text) => sse.sendEvent('delta', { text }),
+          onVision: (structuredInspection) => sse.sendEvent('vision', { structuredInspection }),
+        },
+      });
+      sse.sendEvent('done', out);
+    } catch (err) {
+      sse.sendEvent('error', { error: err instanceof Error ? err.message : 'Streaming turn failed' });
+    } finally {
+      sse.end();
+    }
   });
 
   // Add manual user measurement (e.g., multimeter voltage/resistance, USB meter reading)
@@ -1634,11 +1781,21 @@ export function registerCustomerRoutes(
   });
 
   // ==========================================================================
-  // Knowledge Base & Technical Documents (PDF / MD / TXT + FTS5 RAG)
+  // Knowledge Base & Technical Documents (Hybrid Vector gemini-embedding-2 + FTS RRF)
   // ==========================================================================
   app.get('/api/v1/documents', { preHandler: requireCustomerAuth }, async (req) => {
-    const rows = (await customerDb.db.all('SELECT * FROM documents WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC', req.customerUser!.id)) as Array<Record<string, unknown>>;
+    const userId = req.customerUser!.id;
+    const rows = (await customerDb.db.all(
+      `SELECT d.*,
+        (SELECT COUNT(*) FROM document_chunks dc WHERE dc.document_id = d.id AND dc.embedding_json IS NOT NULL) AS embedded_chunk_count
+       FROM documents d
+       WHERE d.user_id = ? AND d.deleted_at IS NULL
+       ORDER BY d.created_at DESC`,
+      userId,
+    )) as Array<Record<string, unknown>>;
+    const ragStats = await getUserRagStats(customerDb, config, userId);
     return {
+      ragStats,
       documents: rows.map((r) => ({
         id: r.id,
         deviceId: r.device_id,
@@ -1650,10 +1807,52 @@ export function registerCustomerRoutes(
         docVersion: r.doc_version,
         summary: r.summary,
         chunkCount: r.chunk_count,
+        embeddedChunkCount: Number(r.embedded_chunk_count ?? 0),
         status: r.status,
         createdAt: r.created_at,
       })),
     };
+  });
+
+  app.post('/api/v1/documents/reembed', { preHandler: requireCustomerAuth }, async (req) => {
+    const user = req.customerUser!;
+    const result = await reembedUserDocuments({
+      customerDb,
+      ownerDb,
+      config,
+      userId: user.id,
+      anonymousUserHash: createAnonymousUserHash(user.id, config.jwtSecret),
+      maxChunks: 50,
+    });
+    const ragStats = await getUserRagStats(customerDb, config, user.id);
+    return { ...result, ragStats };
+  });
+
+  // ==========================================================================
+  // AI / ML Evaluation & Telemetry Benchmark Lab
+  // ==========================================================================
+  app.get('/api/v1/ai-lab/overview', { preHandler: requireCustomerAuth }, async (req) => {
+    const user = req.customerUser!;
+    const rows = (await customerDb.db.all(
+      'SELECT * FROM diagnostic_snapshots WHERE user_id = ? ORDER BY collected_at DESC LIMIT 120',
+      user.id,
+    )) as Array<Record<string, unknown>>;
+    const snapshots = rows.map(mapSnapshotRow);
+    const overview = await buildAiMlLabOverview({
+      customerDb,
+      config,
+      userId: user.id,
+      externalAiConsent: user.external_ai_consent === 1,
+      byokProvider: user.byok_provider,
+      byokModel: user.byok_model,
+      snapshots,
+    });
+    return { overview };
+  });
+
+  app.post('/api/v1/ai-lab/run-benchmark', { preHandler: requireCustomerAuth }, async () => {
+    const report = await runLiveAiMlBenchmark({ config, ownerDb });
+    return { report };
   });
 
   app.post('/api/v1/documents', { preHandler: requireCustomerAuth }, async (req, reply) => {

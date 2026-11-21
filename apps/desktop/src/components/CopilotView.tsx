@@ -23,7 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import type { EvidenceItem, Hypothesis, StructuredPcbInspection, VerificationReport } from '@coresense/shared';
-import { apiRequest } from '../api';
+import { apiRequest, streamSsePost } from '../api';
 import { MarkdownBlock } from './MarkdownBlock';
 
 interface DeviceOption {
@@ -67,7 +67,14 @@ interface MessageItem {
   inputModality: string;
   attachments: Array<{ id: string; filename: string; clarityNote: string }>;
   structuredInspection?: StructuredPcbInspection | null;
-  citations: Array<{ documentTitle: string; pageNumber: number; sectionHeading: string; excerpt: string }>;
+  citations: Array<{
+    documentTitle: string;
+    pageNumber: number;
+    sectionHeading: string;
+    excerpt: string;
+    matchMode?: string;
+    semanticSimilarity?: number | null;
+  }>;
   toolCalls: ProposedTool[];
   aiProvider?: string | null;
   aiModel?: string | null;
@@ -148,6 +155,13 @@ export const CopilotView: React.FC<{
   const [dragActive, setDragActive] = useState(false);
   const [caseNotice, setCaseNotice] = useState<string | null>(null);
   const [reportModalMd, setReportModalMd] = useState<string | null>(null);
+  const [streamingDraft, setStreamingDraft] = useState<{
+    userText: string;
+    text: string;
+    provider?: string;
+    model?: string;
+    vision?: StructuredPcbInspection | null;
+  } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -313,53 +327,124 @@ export const CopilotView: React.FC<{
     e?.preventDefault();
     const text = (overrideText ?? draft).trim();
     if (!text || sending) return;
+    const attachedImg = imagePreview;
     setError(null);
     setSending(true);
+    setDraft('');
+    setImagePreview(null);
+    setStreamingDraft({ userText: text, text: '' });
+
+    let finalInvId = selectedId;
+    let finalAssistantText = '';
+
     try {
-      if (!selectedId) {
-        const res = await apiRequest<{
-          investigation: { id: string };
-          assistantMessage: { content: string };
-        }>('/api/v1/investigations', {
-          method: 'POST',
-          body: {
+      const endpoint = selectedId
+        ? `/api/v1/investigations/${selectedId}/messages/stream`
+        : '/api/v1/investigations/stream';
+      const body = selectedId
+        ? {
+            message: text,
+            inputModality: attachedImg ? 'image' : listening ? 'voice' : 'text',
+            imageBase64: attachedImg?.base64,
+            imageMimeType: attachedImg?.mimeType,
+            imageFilename: attachedImg?.filename,
+          }
+        : {
             initialSymptom: text,
             deviceId: selectedDeviceId || undefined,
-            inputModality: imagePreview ? 'image' : listening ? 'voice' : 'text',
-            imageBase64: imagePreview?.base64,
-            imageMimeType: imagePreview?.mimeType,
-            imageFilename: imagePreview?.filename,
-          },
-        });
-        setDraft('');
-        setImagePreview(null);
+            inputModality: attachedImg ? 'image' : listening ? 'voice' : 'text',
+            imageBase64: attachedImg?.base64,
+            imageMimeType: attachedImg?.mimeType,
+            imageFilename: attachedImg?.filename,
+          };
+
+      await streamSsePost(endpoint, body, {
+        onMeta: (meta) => {
+          const inv = meta.investigation as { id?: string } | undefined;
+          if (inv?.id) finalInvId = inv.id;
+          setStreamingDraft((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  provider: typeof meta.provider === 'string' ? meta.provider : prev.provider,
+                  model: typeof meta.model === 'string' ? meta.model : prev.model,
+                }
+              : prev,
+          );
+        },
+        onDelta: (chunk) => {
+          finalAssistantText += chunk;
+          setStreamingDraft((prev) => (prev ? { ...prev, text: prev.text + chunk } : prev));
+          if (chatScrollRef.current) {
+            chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+          }
+        },
+        onVision: (inspection) => {
+          setStreamingDraft((prev) =>
+            prev ? { ...prev, vision: inspection as StructuredPcbInspection } : prev,
+          );
+        },
+        onDone: (doneData) => {
+          const inv = doneData.investigation as { id?: string } | undefined;
+          if (inv?.id) finalInvId = inv.id;
+          const am = doneData.assistantMessage as { content?: string } | undefined;
+          if (am?.content) finalAssistantText = am.content;
+        },
+      });
+
+      setStreamingDraft(null);
+      if (finalInvId) {
         await loadInvestigations(false);
-        setSelectedId(res.investigation.id);
-        await loadDetail(res.investigation.id);
-        speakText(res.assistantMessage.content);
-      } else {
-        const res = await apiRequest<{ assistantMessage: { content: string } }>(
-          `/api/v1/investigations/${selectedId}/messages`,
-          {
+        setSelectedId(finalInvId);
+        await loadDetail(finalInvId);
+      }
+      if (finalAssistantText) speakText(finalAssistantText);
+    } catch {
+      // Seamless fallback to classic JSON turn if SSE stream was interrupted by proxy
+      setStreamingDraft(null);
+      try {
+        if (!selectedId) {
+          const res = await apiRequest<{
+            investigation: { id: string };
+            assistantMessage: { content: string };
+          }>('/api/v1/investigations', {
             method: 'POST',
             body: {
-              message: text,
-              inputModality: imagePreview ? 'image' : 'text',
-              imageBase64: imagePreview?.base64,
-              imageMimeType: imagePreview?.mimeType,
-              imageFilename: imagePreview?.filename,
+              initialSymptom: text,
+              deviceId: selectedDeviceId || undefined,
+              inputModality: attachedImg ? 'image' : listening ? 'voice' : 'text',
+              imageBase64: attachedImg?.base64,
+              imageMimeType: attachedImg?.mimeType,
+              imageFilename: attachedImg?.filename,
             },
-          },
-        );
-        setDraft('');
-        setImagePreview(null);
-        await loadDetail(selectedId);
-        await loadInvestigations(false);
-        speakText(res.assistantMessage.content);
+          });
+          await loadInvestigations(false);
+          setSelectedId(res.investigation.id);
+          await loadDetail(res.investigation.id);
+          speakText(res.assistantMessage.content);
+        } else {
+          const res = await apiRequest<{ assistantMessage: { content: string } }>(
+            `/api/v1/investigations/${selectedId}/messages`,
+            {
+              method: 'POST',
+              body: {
+                message: text,
+                inputModality: attachedImg ? 'image' : 'text',
+                imageBase64: attachedImg?.base64,
+                imageMimeType: attachedImg?.mimeType,
+                imageFilename: attachedImg?.filename,
+              },
+            },
+          );
+          await loadDetail(selectedId);
+          await loadInvestigations(false);
+          speakText(res.assistantMessage.content);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to send message. Verify the backend API is reachable.');
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to send message. Verify the backend API is reachable.');
     } finally {
+      setStreamingDraft(null);
       setSending(false);
     }
   };
@@ -648,7 +733,7 @@ export const CopilotView: React.FC<{
 
         {/* Message Stream */}
         <div ref={chatScrollRef} className="flex-1 min-h-0 overflow-y-auto px-5 py-6 space-y-5">
-          {messages.length === 0 ? (
+          {messages.length === 0 && !streamingDraft ? (
             <div className="max-w-xl mx-auto py-8 space-y-7 cs-animate-view">
               <div className="space-y-2.5">
                 <div className="inline-flex items-center gap-2 text-xs text-[var(--cs-ink-muted)]">
@@ -854,6 +939,12 @@ export const CopilotView: React.FC<{
                                 <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-accent-ink)]">
                                   p.{c.pageNumber}
                                 </span>
+                                {c.matchMode && (
+                                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--cs-ok-soft)] border border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)] uppercase">
+                                    {c.matchMode.replace(/_/g, ' ')}
+                                    {c.semanticSimilarity != null ? ` · ${c.semanticSimilarity}` : ''}
+                                  </span>
+                                )}
                                 <span className="text-[var(--cs-ink-muted)]">{c.sectionHeading}</span>
                               </div>
                             ))}
@@ -923,7 +1014,49 @@ export const CopilotView: React.FC<{
                 </div>
               ))}
 
-              {sending && (
+              {streamingDraft && (
+                <div className="space-y-4">
+                  <div className="flex flex-col items-end cs-animate-msg">
+                    <div className="max-w-[85%] rounded-lg bg-[var(--cs-well)] border border-[var(--cs-border)] px-4 py-3 text-[var(--cs-ink)]">
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap">{streamingDraft.userText}</p>
+                    </div>
+                  </div>
+                  <article className="w-full rounded-lg bg-[var(--cs-surface)] border border-[var(--cs-border)] border-l-[3px] border-l-[var(--cs-accent)] px-4 py-3.5 space-y-3 cs-animate-msg">
+                    {streamingDraft.text ? (
+                      <div className="space-y-1">
+                        <MarkdownBlock content={streamingDraft.text} />
+                        <span className="inline-block w-2 h-3.5 bg-[var(--cs-accent)] align-middle animate-pulse" aria-hidden="true" />
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3 text-xs text-[var(--cs-ink-muted)]">
+                        <div className="flex items-end gap-0.5 h-3.5" aria-hidden="true">
+                          {[0, 90, 180, 270, 360].map((delay) => (
+                            <span
+                              key={delay}
+                              className="w-1 h-full rounded-[1px] bg-[var(--cs-accent)] cs-animate-eq"
+                              style={{ animationDelay: `${delay}ms` }}
+                            />
+                          ))}
+                        </div>
+                        <span>Streaming live diagnostic reasoning...</span>
+                      </div>
+                    )}
+                    {streamingDraft.vision && (
+                      <div className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-accent-border)] px-3 py-2 text-xs text-[var(--cs-ink)]">
+                        <strong>Vision ready:</strong> {streamingDraft.vision.boardOrDeviceType} ({streamingDraft.vision.identifiedComponents.length} component(s) mapped)
+                      </div>
+                    )}
+                    <div className="pt-2 border-t border-[var(--cs-border)] text-[11px] text-[var(--cs-accent-ink)] font-mono flex items-center justify-between gap-2">
+                      <span>
+                        LIVE STREAM {streamingDraft.provider ? `• ${streamingDraft.provider} / ${streamingDraft.model}` : ''}
+                      </span>
+                      <span className="cs-animate-led">●</span>
+                    </div>
+                  </article>
+                </div>
+              )}
+
+              {sending && !streamingDraft && (
                 <div className="flex items-center gap-3 px-4 py-3 rounded-lg bg-[var(--cs-surface)] border border-[var(--cs-border)] text-xs text-[var(--cs-ink-muted)] cs-animate-msg">
                   <div className="flex items-end gap-0.5 h-3.5" aria-hidden="true">
                     {[0, 90, 180, 270, 360].map((delay) => (

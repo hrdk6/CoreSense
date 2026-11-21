@@ -67,8 +67,8 @@ const HAZARD_RULES: HazardRule[] = [
     title: 'Liquid-Damaged Energized Electronics Hazard',
     severity: 'high_risk',
     patterns: [
-      /\b(spilled|water|liquid|coffee|soda|dropped in water|wet|submerged)\b.{0,40}\b(plug in|turn on|charge|hair dryer|rice|power on|oven|microwave)\b/i,
-      /\b(charging|plugged in)\b.{0,30}\b(wet|water|liquid|spilled)\b/i,
+      /\b(spilled|water|liquid|coffee|soda|dropped in water|wet|submerged)\b.{0,50}\b(plug(?:ged)?[\s-]?in|turn on|charge|charging|hair dryer|rice|power on|oven|microwave|smoke|smelled smoke|spark|burning smell|energized|live)\b/i,
+      /\b(charging|plug(?:ged)?[\s-]?in)\b.{0,40}\b(wet|water|liquid|spilled|coffee|soda|smoke|spark)\b/i,
     ],
     riskExplanation:
       'Applying power or charging wet electronics causes immediate electrochemical corrosion across power rails, internal short circuits, battery overheating, or electric shock.',

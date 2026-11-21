@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCoreSenseServer, type CoreSenseServerContext } from '../apps/api/src/server.js';
 import { generateTotpCode } from '../apps/api/src/security/crypto.js';
 import { analyzeTelemetryHealth } from '../apps/api/src/services/anomalyEngine.js';
+import { computeHybridRrfScore, cosineSimilarity } from '../apps/api/src/services/rag.js';
 import { executeValidatedDiagnosticTool } from '@coresense/diagnostics-core';
 import { StructuredPcbInspectionSchema, type DiagnosticResult } from '@coresense/shared';
 
@@ -151,7 +152,7 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       url: '/api/v1/releases/latest',
     });
     expect(releaseRes.statusCode).toBe(200);
-    expect(releaseRes.json().desktop.version).toBe('1.1.0');
+    expect(releaseRes.json().desktop.version).toBe('1.2.0');
   });
 
   it('3. Runs genuine local Windows/OS diagnostics and strictly enforces tool registry security & approval gates', async () => {
@@ -595,5 +596,88 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
     const assistantMsg = reload.json().messages.find((m: any) => m.role === 'assistant');
     expect(assistantMsg.structuredInspection).toBeTruthy();
     expect(assistantMsg.structuredInspection.boardOrDeviceType).toContain('board-u7000.png');
+  });
+
+  it('11. Verifies Hybrid Vector + Lexical RRF RAG math, ragStats inventory, and retrieval provenance', async () => {
+    // Exact RRF & cosine vector math checks
+    const dualRrf = computeHybridRrfScore({ lexicalRank: 1, vectorRank: 1 });
+    const singleRrf = computeHybridRrfScore({ lexicalRank: 1, vectorRank: null });
+    expect(dualRrf).toBeGreaterThan(singleRrf);
+    expect(cosineSimilarity([0.6, 0.8], [0.6, 0.8])).toBeCloseTo(1, 5);
+    expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0, 5);
+
+    // Documents list exposes ragStats & per-document embeddedChunkCount
+    const docsRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/documents',
+      headers: { Authorization: `Bearer ${userAToken}` },
+    });
+    expect(docsRes.statusCode).toBe(200);
+    expect(docsRes.json().ragStats.embeddingDimensions).toBe(768);
+    expect(docsRes.json().documents[0].embeddedChunkCount).toBeGreaterThanOrEqual(0);
+
+    // Search exposes matchMode (hybrid_rrf when Gemini key active, lexical_fts offline) & lexicalScore provenance
+    const searchRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/documents/search?q=tachometer+JFAN1',
+      headers: { Authorization: `Bearer ${userAToken}` },
+    });
+    expect(searchRes.statusCode).toBe(200);
+    expect(['hybrid_rrf', 'lexical_fts']).toContain(searchRes.json().results[0].matchMode);
+    expect(searchRes.json().results[0].lexicalScore).toBeGreaterThan(0);
+
+    // Reembed endpoint responds cleanly even when offline/no API key
+    const reembed = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/documents/reembed',
+      headers: { Authorization: `Bearer ${userAToken}` },
+      payload: {},
+    });
+    expect(reembed.statusCode).toBe(200);
+    expect(typeof reembed.json().totalChunks).toBe('number');
+  });
+
+  it('12. Streams real-time SSE Copilot tokens and passes all 12/12 live AI/ML Evaluation Lab benchmarks', async () => {
+    // Verify AI/ML Lab overview endpoint
+    const labOverview = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/ai-lab/overview',
+      headers: { Authorization: `Bearer ${userAToken}` },
+    });
+    expect(labOverview.statusCode).toBe(200);
+    expect(labOverview.json().overview.pipeline.embeddingEngine).toContain('768');
+    expect(Array.isArray(labOverview.json().overview.trendSeries)).toBe(true);
+
+    // Execute live 12-case AI/ML Safety, Grounding & Math benchmark
+    const benchRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/ai-lab/run-benchmark',
+      headers: { Authorization: `Bearer ${userAToken}` },
+      payload: {},
+    });
+    expect(benchRes.statusCode).toBe(200);
+    const report = benchRes.json().report;
+    expect(report.totalCases).toBe(12);
+    expect(report.passedCases).toBe(12);
+    expect(report.passRatePercent).toBe(100);
+
+    // Verify real-time SSE streaming endpoint emits meta, delta, and done frames over HTTP
+    const addr = await ctx.app.listen({ port: 0, host: '127.0.0.1' });
+    const streamResp = await fetch(`${addr}/api/v1/investigations/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userAToken}`,
+      },
+      body: JSON.stringify({
+        initialSymptom: 'My desktop GPU shows Windows Device Manager Code 43 and black screens.',
+      }),
+    });
+    expect(streamResp.status).toBe(200);
+    expect(streamResp.headers.get('content-type')).toContain('text/event-stream');
+    const sseBody = await streamResp.text();
+    expect(sseBody).toContain('event: meta');
+    expect(sseBody).toContain('event: delta');
+    expect(sseBody).toContain('event: done');
   });
 });

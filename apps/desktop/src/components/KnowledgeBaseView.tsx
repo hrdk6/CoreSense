@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FileText, Search, Shield, Trash2, Upload } from 'lucide-react';
+import { Database, FileText, Search, Shield, Trash2, Upload } from 'lucide-react';
 import { apiRequest } from '../api';
 
 interface DocumentRow {
@@ -10,8 +10,20 @@ interface DocumentRow {
   docVersion: string;
   summary: string;
   chunkCount: number;
+  embeddedChunkCount?: number;
   fileSizeBytes: number;
   createdAt: string;
+}
+
+interface RagStats {
+  documentCount: number;
+  totalChunks: number;
+  embeddedChunks: number;
+  embeddingCoveragePercent: number;
+  embeddingModel: string;
+  embeddingDimensions: number;
+  fusionMethod: string;
+  vectorSearchActive: boolean;
 }
 
 interface SearchHit {
@@ -23,10 +35,15 @@ interface SearchHit {
   hasTable: boolean;
   hasCommandBlock: boolean;
   relevanceScore: number;
+  matchMode?: 'hybrid_rrf' | 'semantic_vector' | 'lexical_fts';
+  lexicalScore?: number | null;
+  semanticSimilarity?: number | null;
 }
 
 export const KnowledgeBaseView: React.FC = () => {
   const [docs, setDocs] = useState<DocumentRow[]>([]);
+  const [ragStats, setRagStats] = useState<RagStats | null>(null);
+  const [reembedding, setReembedding] = useState(false);
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -38,8 +55,22 @@ export const KnowledgeBaseView: React.FC = () => {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const loadDocs = async () => {
-    const res = await apiRequest<{ documents: DocumentRow[] }>('/api/v1/documents');
+    const res = await apiRequest<{ documents: DocumentRow[]; ragStats?: RagStats }>('/api/v1/documents');
     setDocs(res.documents);
+    if (res.ragStats) setRagStats(res.ragStats);
+  };
+
+  const handleReembed = async () => {
+    setReembedding(true);
+    setError(null);
+    try {
+      await apiRequest('/api/v1/documents/reembed', { method: 'POST', body: {} });
+      await loadDocs();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to embed missing chunks.');
+    } finally {
+      setReembedding(false);
+    }
   };
 
   useEffect(() => {
@@ -193,6 +224,32 @@ export const KnowledgeBaseView: React.FC = () => {
         </div>
       )}
 
+      {/* Hybrid Vector RAG Status Bar */}
+      {ragStats && (
+        <div className="cs-panel px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <Database className="h-3.5 w-3.5 text-[var(--cs-ok)] shrink-0" />
+            <span className="font-semibold text-[var(--cs-ink)]">Hybrid Vector + Lexical RRF Index</span>
+            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-2)]">
+              {ragStats.embeddingModel} ({ragStats.embeddingDimensions}d)
+            </span>
+            <span className="font-mono text-[11px] text-[var(--cs-ink-muted)] cs-tabular">
+              {ragStats.embeddedChunks}/{ragStats.totalChunks} chunks vectorized ({ragStats.embeddingCoveragePercent}%)
+            </span>
+          </div>
+          {ragStats.embeddedChunks < ragStats.totalChunks && (
+            <button
+              type="button"
+              disabled={reembedding}
+              onClick={handleReembed}
+              className="cs-btn-secondary px-2.5 py-1 text-[11px] font-semibold cursor-pointer disabled:opacity-50"
+            >
+              {reembedding ? 'Vectorizing...' : 'Embed missing chunks'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Search Bar */}
       <form onSubmit={handleSearch} className="cs-panel p-2 flex items-center gap-2">
         <Search className="h-4 w-4 text-[var(--cs-ink-muted)] ml-2 shrink-0" />
@@ -234,7 +291,25 @@ export const KnowledgeBaseView: React.FC = () => {
                     </span>
                     <span className="text-[var(--cs-ink-muted)]">{h.sectionHeading}</span>
                   </div>
-                  <div className="flex gap-1.5 font-mono text-[11px]">
+                  <div className="flex flex-wrap gap-1.5 font-mono text-[11px]">
+                    {h.matchMode && (
+                      <span
+                        className={`rounded px-1.5 py-0.5 border uppercase text-[10px] ${
+                          h.matchMode === 'hybrid_rrf'
+                            ? 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                            : h.matchMode === 'semantic_vector'
+                              ? 'bg-[var(--cs-accent-soft)] border-[var(--cs-accent-border)] text-[var(--cs-accent-ink)]'
+                              : 'bg-[var(--cs-well)] border-[var(--cs-border)] text-[var(--cs-ink-muted)]'
+                        }`}
+                      >
+                        {h.matchMode.replace(/_/g, ' ')}
+                      </span>
+                    )}
+                    {h.semanticSimilarity != null && (
+                      <span className="rounded bg-[var(--cs-accent-soft)] text-[var(--cs-accent-ink)] px-1.5 py-0.5 cs-tabular">
+                        Cosine {h.semanticSimilarity}
+                      </span>
+                    )}
                     {h.hasTable && (
                       <span className="rounded bg-[var(--cs-accent-soft)] text-[var(--cs-accent-ink)] px-1.5 py-0.5">
                         Table
@@ -246,7 +321,7 @@ export const KnowledgeBaseView: React.FC = () => {
                       </span>
                     )}
                     <span className="rounded bg-[var(--cs-well)] text-[var(--cs-ink-muted)] px-1.5 py-0.5 cs-tabular">
-                      Score {h.relevanceScore}
+                      RRF {h.relevanceScore}
                     </span>
                   </div>
                 </div>

@@ -3,7 +3,7 @@ import { z } from 'zod';
 // ============================================================================
 // CoreSense Brand & Platform Constants
 // ============================================================================
-export const CORESENSE_VERSION = '1.1.0';
+export const CORESENSE_VERSION = '1.2.0';
 export const CORESENSE_TAGLINE = "Understand what's happening beneath the surface.";
 
 export const PlatformSchema = z.enum(['windows', 'macos', 'linux', 'ios', 'android', 'web']);

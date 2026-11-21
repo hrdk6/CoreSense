@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Activity,
   BookOpen,
+  BrainCircuit,
   ClipboardList,
   Laptop,
   LogOut,
@@ -20,6 +21,7 @@ import {
   setAuthToken,
 } from './api';
 import { initSupabaseAuthSync, signOutSupabase } from './supabase';
+import { AiMlLabView } from './components/AiMlLabView';
 import { AuthView } from './components/AuthView';
 import { BrandLogo } from './components/BrandLogo';
 import { CopilotView } from './components/CopilotView';
@@ -29,7 +31,7 @@ import { KnowledgeBaseView } from './components/KnowledgeBaseView';
 import { RepairCasesView } from './components/RepairCasesView';
 import { type AccountSnapshot, SettingsView } from './components/SettingsView';
 
-type TabId = 'copilot' | 'diagnostics' | 'devices' | 'knowledge' | 'cases' | 'settings';
+type TabId = 'copilot' | 'diagnostics' | 'ailab' | 'devices' | 'knowledge' | 'cases' | 'settings';
 
 const THEME_STORAGE_KEY = 'coresense_desktop_theme';
 
@@ -160,6 +162,7 @@ export const App: React.FC = () => {
   const navItems: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
     { id: 'copilot', label: 'Copilot', icon: <MessageSquare className="h-3.5 w-3.5" /> },
     { id: 'diagnostics', label: 'Diagnostics', icon: <Activity className="h-3.5 w-3.5" /> },
+    { id: 'ailab', label: 'AI / ML Lab', icon: <BrainCircuit className="h-3.5 w-3.5" /> },
     { id: 'devices', label: 'Devices', icon: <Laptop className="h-3.5 w-3.5" /> },
     { id: 'knowledge', label: 'Manuals', icon: <BookOpen className="h-3.5 w-3.5" /> },
     { id: 'cases', label: 'Repair cases', icon: <ClipboardList className="h-3.5 w-3.5" /> },
@@ -306,6 +309,7 @@ export const App: React.FC = () => {
       >
         {activeTab === 'copilot' && <CopilotView devices={devices} />}
         {activeTab === 'diagnostics' && <DiagnosticsView devices={devices} />}
+        {activeTab === 'ailab' && <AiMlLabView />}
         {activeTab === 'devices' && <DevicesView devices={devices} onRefresh={loadWorkspace} />}
         {activeTab === 'knowledge' && <KnowledgeBaseView />}
         {activeTab === 'cases' && <RepairCasesView devices={devices} />}

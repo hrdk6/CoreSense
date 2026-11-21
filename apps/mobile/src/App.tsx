@@ -28,6 +28,7 @@ import {
   getMobileSyncSeq,
   getMobileToken,
   mobileApiRequest,
+  mobileStreamSsePost,
   reportMobileActivation,
   setMobileApiBaseUrl,
   setMobileSyncSeq,
@@ -142,6 +143,7 @@ export const App: React.FC = () => {
   const [prompt, setPrompt] = useState('');
   const [photo, setPhoto] = useState<{ base64: string; mimeType: string; filename: string } | null>(null);
   const [sending, setSending] = useState(false);
+  const [mobileStreamText, setMobileStreamText] = useState<{ userText: string; text: string } | null>(null);
 
   // Quick Add Device / Case / Manual / Mobile standalone forms
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
@@ -311,48 +313,87 @@ export const App: React.FC = () => {
 
   const handleSendCopilot = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || sending) return;
+    const text = prompt.trim();
+    if (!text || sending) return;
+    const attached = photo;
     setSending(true);
+    setPrompt('');
+    setPhoto(null);
+    setMobileStreamText({ userText: text, text: '' });
+
+    let targetId = invId;
     try {
-      let targetId = invId;
+      const endpoint = targetId
+        ? `/api/v1/investigations/${targetId}/messages/stream`
+        : '/api/v1/investigations/stream';
+      const body = targetId
+        ? {
+            message: text,
+            inputModality: attached ? 'image' : 'text',
+            imageBase64: attached?.base64,
+            imageMimeType: attached?.mimeType,
+            imageFilename: attached?.filename,
+          }
+        : {
+            initialSymptom: text,
+            deviceId: selectedDeviceId || undefined,
+            inputModality: attached ? 'image' : 'text',
+            imageBase64: attached?.base64,
+            imageMimeType: attached?.mimeType,
+            imageFilename: attached?.filename,
+          };
+
+      await mobileStreamSsePost(endpoint, body, {
+        onMeta: (meta) => {
+          const inv = meta.investigation as { id?: string } | undefined;
+          if (inv?.id) targetId = inv.id;
+        },
+        onDelta: (chunk) => {
+          setMobileStreamText((prev) => (prev ? { ...prev, text: prev.text + chunk } : prev));
+        },
+        onDone: (done) => {
+          const inv = done.investigation as { id?: string } | undefined;
+          if (inv?.id) targetId = inv.id;
+        },
+      });
+    } catch {
+      // Fallback to classic JSON request if SSE stream drops
       if (!targetId) {
-        const res = await mobileApiRequest<{
-          investigation: { id: string };
-          hypotheses: typeof hypotheses;
-        }>('/api/v1/investigations', {
+        const res = await mobileApiRequest<{ investigation: { id: string } }>('/api/v1/investigations', {
           method: 'POST',
           body: {
-            initialSymptom: prompt,
+            initialSymptom: text,
             deviceId: selectedDeviceId || undefined,
-            inputModality: photo ? 'image' : 'text',
-            imageBase64: photo?.base64,
-            imageMimeType: photo?.mimeType,
-            imageFilename: photo?.filename,
+            inputModality: attached ? 'image' : 'text',
+            imageBase64: attached?.base64,
+            imageMimeType: attached?.mimeType,
+            imageFilename: attached?.filename,
           },
         });
         targetId = res.investigation.id;
-        setInvId(targetId);
       } else {
         await mobileApiRequest(`/api/v1/investigations/${targetId}/messages`, {
           method: 'POST',
           body: {
-            message: prompt,
-            inputModality: photo ? 'image' : 'text',
-            imageBase64: photo?.base64,
-            imageMimeType: photo?.mimeType,
-            imageFilename: photo?.filename,
+            message: text,
+            inputModality: attached ? 'image' : 'text',
+            imageBase64: attached?.base64,
+            imageMimeType: attached?.mimeType,
+            imageFilename: attached?.filename,
           },
         });
       }
-      setPrompt('');
-      setPhoto(null);
-      const det = await mobileApiRequest<{
-        investigation: { hypotheses: typeof hypotheses };
-        messages: typeof messages;
-      }>(`/api/v1/investigations/${targetId}`);
-      setMessages(det.messages);
-      setHypotheses(det.investigation.hypotheses);
     } finally {
+      setMobileStreamText(null);
+      if (targetId) {
+        setInvId(targetId);
+        const det = await mobileApiRequest<{
+          investigation: { hypotheses: typeof hypotheses };
+          messages: typeof messages;
+        }>(`/api/v1/investigations/${targetId}`);
+        setMessages(det.messages);
+        setHypotheses(det.investigation.hypotheses);
+      }
       setSending(false);
     }
   };
@@ -645,7 +686,7 @@ export const App: React.FC = () => {
                 )}
 
                 <div className="space-y-2.5">
-                  {messages.length === 0 ? (
+                  {messages.length === 0 && !mobileStreamText ? (
                     <div className="cs-panel p-5 space-y-3">
                       <div className="h-9 w-9 rounded-lg bg-[var(--cs-chassis)] border border-[var(--cs-border)] flex items-center justify-center">
                         <Wrench className="h-4 w-4 text-[var(--cs-accent)]" />
@@ -740,7 +781,25 @@ export const App: React.FC = () => {
                     ))
                   )}
 
-                  {sending && (
+                  {mobileStreamText && (
+                    <div className="space-y-2">
+                      <div className="rounded-lg p-3 text-xs leading-relaxed whitespace-pre-wrap bg-[var(--cs-well)] border border-[var(--cs-border)] ml-6 text-[var(--cs-ink)]">
+                        {mobileStreamText.userText}
+                      </div>
+                      <div className="rounded-lg p-3 text-xs leading-relaxed bg-[var(--cs-surface)] border border-[var(--cs-border)] border-l-[3px] border-l-[var(--cs-accent)] mr-3 text-[var(--cs-ink-2)]">
+                        {mobileStreamText.text ? (
+                          <div className="space-y-1">
+                            {renderMobileMarkdown(mobileStreamText.text)}
+                            <span className="inline-block w-1.5 h-3 bg-[var(--cs-accent)] animate-pulse align-middle" />
+                          </div>
+                        ) : (
+                          <span className="text-[var(--cs-ink-muted)]">Streaming live diagnosis...</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {sending && !mobileStreamText && (
                     <div className="flex items-center gap-2.5 rounded-lg bg-[var(--cs-surface)] border border-[var(--cs-border)] p-3 text-xs text-[var(--cs-ink-muted)]">
                       <div className="flex items-end gap-0.5 h-3">
                         {[0, 90, 180, 270].map((d) => (

@@ -159,6 +159,78 @@ export async function mobileApiRequest<T>(
   return data as T;
 }
 
+export async function mobileStreamSsePost(
+  path: string,
+  body: unknown,
+  handlers: {
+    onMeta?: (data: Record<string, unknown>) => void;
+    onDelta?: (text: string) => void;
+    onVision?: (inspection: unknown) => void;
+    onDone?: (data: Record<string, unknown>) => void;
+  },
+): Promise<void> {
+  const token = getMobileToken();
+  const deviceInfo = await detectMobilePlatform();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+    'x-coresense-platform': deviceInfo.platform,
+    'x-coresense-version': CORESENSE_VERSION,
+    'x-coresense-install-id': getInstallId(),
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${getApiBaseUrl()}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`Stream failed (${res.status})`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const dispatchFrame = (frame: string) => {
+    const lines = frame.split(/\r?\n/);
+    let eventName = 'message';
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith('event:')) eventName = line.slice(6).trim();
+      else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+    }
+    if (dataLines.length === 0) return;
+    let payload: Record<string, unknown>;
+    try {
+      payload = JSON.parse(dataLines.join('\n')) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    if (eventName === 'meta') handlers.onMeta?.(payload);
+    else if (eventName === 'delta' && typeof payload.text === 'string') handlers.onDelta?.(payload.text);
+    else if (eventName === 'vision') handlers.onVision?.(payload.structuredInspection);
+    else if (eventName === 'done') handlers.onDone?.(payload);
+    else if (eventName === 'error') {
+      throw new Error(typeof payload.error === 'string' ? payload.error : 'Stream error');
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const frame = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      if (frame.trim()) dispatchFrame(frame);
+    }
+  }
+  if (buffer.trim()) dispatchFrame(buffer);
+}
+
 export interface MobileSocProfile {
   gpuVendor: string;
   gpuRenderer: string;
