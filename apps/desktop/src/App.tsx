@@ -39,7 +39,7 @@ export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('copilot');
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     const saved = localStorage.getItem(THEME_STORAGE_KEY);
-    return saved === 'dark' ? 'dark' : 'light';
+    return saved === 'light' ? 'light' : 'dark';
   });
   const [offlineBanner, setOfflineBanner] = useState(false);
 
@@ -141,8 +141,12 @@ export const App: React.FC = () => {
 
   const handleLogout = () => {
     setAuthToken(null);
+    try {
+      localStorage.removeItem('coresense_offline_cache');
+    } catch {}
     setTokenReady(false);
     setAccount(null);
+    setDevices([]);
   };
 
   const initials = account.user.displayName
@@ -217,24 +221,21 @@ export const App: React.FC = () => {
             type="button"
             onClick={() => setActiveTab('settings')}
             className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-md bg-[var(--cs-surface)] border border-[var(--cs-border)] hover:border-[var(--cs-border-strong)] transition-colors cursor-pointer"
-            title="Account & expertise depth"
+            title="Account & preferences"
           >
             <span className="h-5 w-5 rounded bg-[var(--cs-action)] text-[var(--cs-action-ink)] text-[10px] font-semibold flex items-center justify-center">
               {initials || 'CS'}
             </span>
-            <span className="text-xs font-medium text-[var(--cs-ink)] max-w-[110px] truncate">
+            <span className="text-xs font-medium text-[var(--cs-ink)] max-w-[140px] truncate">
               {account.user.displayName}
-            </span>
-            <span className="text-[11px] px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-muted)] capitalize">
-              {account.user.expertiseMode}
             </span>
           </button>
 
           <button
             type="button"
             onClick={toggleTheme}
-            title={theme === 'dark' ? 'Switch to light chassis' : 'Switch to dark graphite'}
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to OLED black'}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to OLED black theme'}
             className="h-8 w-8 rounded-md bg-[var(--cs-surface)] border border-[var(--cs-border)] hover:border-[var(--cs-border-strong)] flex items-center justify-center text-[var(--cs-ink-2)] hover:text-[var(--cs-ink)] transition-colors cursor-pointer"
           >
             {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
@@ -275,9 +276,7 @@ export const App: React.FC = () => {
           activeTab === 'copilot' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto p-5 lg:p-7'
         }`}
       >
-        {activeTab === 'copilot' && (
-          <CopilotView devices={devices} expertiseMode={account.user.expertiseMode} />
-        )}
+        {activeTab === 'copilot' && <CopilotView devices={devices} />}
         {activeTab === 'diagnostics' && <DiagnosticsView devices={devices} />}
         {activeTab === 'devices' && <DevicesView devices={devices} onRefresh={loadWorkspace} />}
         {activeTab === 'knowledge' && <KnowledgeBaseView />}

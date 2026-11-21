@@ -69,7 +69,7 @@ const TelemetryGauge: React.FC<{
             cy="30"
             r={radius}
             fill="none"
-            stroke="var(--cs-well)"
+            stroke="var(--cs-border)"
             strokeWidth="5"
           />
           <circle
@@ -103,6 +103,7 @@ const TelemetryGauge: React.FC<{
 export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: string }> }> = ({ devices }) => {
   const [history, setHistory] = useState<DiagnosticResult[]>([]);
   const [active, setActive] = useState<DiagnosticResult | null>(null);
+  const [compareBaselineId, setCompareBaselineId] = useState<string>('');
   const [runningTool, setRunningTool] = useState<string | null>(null);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [showSimDrawer, setShowSimDrawer] = useState(false);
@@ -122,7 +123,18 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
     setRunningTool(toolId);
     setError(null);
     try {
-      if (isTauriRuntime() && ['cpu_diagnostics', 'memory_diagnostics', 'storage_diagnostics', 'full_system_snapshot'].includes(toolId)) {
+      if (
+        isTauriRuntime() &&
+        [
+          'cpu_diagnostics',
+          'memory_diagnostics',
+          'storage_diagnostics',
+          'network_diagnostics',
+          'os_health_diagnostics',
+          'power_and_peripherals',
+          'full_system_snapshot',
+        ].includes(toolId)
+      ) {
         const nativeRes = await runNativeTauriDiagnostic(toolId);
         if (nativeRes) {
           const ingested = await apiRequest<{ snapshot: DiagnosticResult }>('/api/v1/diagnostics/ingest', {
@@ -188,6 +200,24 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
   const diskPct = firstVol?.usedPercent != null ? Number(firstVol.usedPercent) : null;
   const dnsOk = Boolean((netObj?.connectivity as any)?.dnsResolved);
   const dnsMs = (netObj?.connectivity as any)?.dnsLatencyMs;
+
+  const baselineSnap = history.find((h) => h.id === compareBaselineId && h.id !== active?.id) || null;
+  const extractQuickMetrics = (s: DiagnosticResult | null) => {
+    if (!s) return null;
+    const c = ((s.data?.cpu as Record<string, unknown>) || (s.toolId === 'cpu_diagnostics' ? s.data : null)) as any;
+    const m = ((s.data?.memory as Record<string, unknown>) || (s.toolId === 'memory_diagnostics' ? s.data : null)) as any;
+    const st = ((s.data?.storage as Record<string, unknown>) || (s.toolId === 'storage_diagnostics' ? s.data : null)) as any;
+    const nw = ((s.data?.network as Record<string, unknown>) || (s.toolId === 'network_diagnostics' ? s.data : null)) as any;
+    return {
+      cpuPct: c?.utilizationPercent != null ? Number(c.utilizationPercent) : null,
+      ramPct: m?.utilizationPercent != null ? Number(m.utilizationPercent) : null,
+      freeGb: Array.isArray(st?.volumes) && st.volumes[0]?.freeGb != null ? Number(st.volumes[0].freeGb) : null,
+      dnsMs: nw?.connectivity?.dnsLatencyMs != null ? Number(nw.connectivity.dnsLatencyMs) : null,
+      warnings: s.warnings.length,
+    };
+  };
+  const activeMetrics = extractQuickMetrics(active);
+  const baseMetrics = extractQuickMetrics(baselineSnap);
 
   return (
     <div className="max-w-7xl mx-auto space-y-5">
@@ -337,6 +367,86 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
             </div>
           ) : (
             <div key={active.id} className="space-y-4 cs-animate-view">
+              {/* Optional Before-vs-After Snapshot Diff Card */}
+              {baselineSnap && activeMetrics && baseMetrics && (
+                <div className="cs-panel p-4 space-y-3 border-l-[4px] border-l-[var(--cs-accent)]">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="cs-heading text-sm font-bold text-[var(--cs-ink)]">
+                        Before vs After Snapshot Delta
+                      </div>
+                      <div className="text-[11px] font-mono text-[var(--cs-ink-muted)]">
+                        Baseline ({new Date(baselineSnap.collectedAt).toLocaleTimeString()}) → Active ({new Date(active.collectedAt).toLocaleTimeString()})
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCompareBaselineId('')}
+                      className="text-xs text-[var(--cs-ink-muted)] hover:text-[var(--cs-ink)] underline cursor-pointer"
+                    >
+                      Clear diff
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs font-mono cs-tabular">
+                    {[
+                      {
+                        label: 'Warnings',
+                        before: `${baseMetrics.warnings}`,
+                        after: `${activeMetrics.warnings}`,
+                        better: activeMetrics.warnings < baseMetrics.warnings,
+                        worse: activeMetrics.warnings > baseMetrics.warnings,
+                      },
+                      {
+                        label: 'CPU Load',
+                        before: baseMetrics.cpuPct != null ? `${baseMetrics.cpuPct}%` : '—',
+                        after: activeMetrics.cpuPct != null ? `${activeMetrics.cpuPct}%` : '—',
+                        better: baseMetrics.cpuPct != null && activeMetrics.cpuPct != null && activeMetrics.cpuPct < baseMetrics.cpuPct - 5,
+                        worse: baseMetrics.cpuPct != null && activeMetrics.cpuPct != null && activeMetrics.cpuPct > baseMetrics.cpuPct + 5,
+                      },
+                      {
+                        label: 'RAM Usage',
+                        before: baseMetrics.ramPct != null ? `${baseMetrics.ramPct}%` : '—',
+                        after: activeMetrics.ramPct != null ? `${activeMetrics.ramPct}%` : '—',
+                        better: baseMetrics.ramPct != null && activeMetrics.ramPct != null && activeMetrics.ramPct < baseMetrics.ramPct - 4,
+                        worse: baseMetrics.ramPct != null && activeMetrics.ramPct != null && activeMetrics.ramPct > baseMetrics.ramPct + 4,
+                      },
+                      {
+                        label: 'Free Disk',
+                        before: baseMetrics.freeGb != null ? `${baseMetrics.freeGb} GB` : '—',
+                        after: activeMetrics.freeGb != null ? `${activeMetrics.freeGb} GB` : '—',
+                        better: baseMetrics.freeGb != null && activeMetrics.freeGb != null && activeMetrics.freeGb > baseMetrics.freeGb + 1,
+                        worse: baseMetrics.freeGb != null && activeMetrics.freeGb != null && activeMetrics.freeGb < baseMetrics.freeGb - 1,
+                      },
+                      {
+                        label: 'DNS Latency',
+                        before: baseMetrics.dnsMs != null ? `${baseMetrics.dnsMs}ms` : '—',
+                        after: activeMetrics.dnsMs != null ? `${activeMetrics.dnsMs}ms` : '—',
+                        better: baseMetrics.dnsMs != null && activeMetrics.dnsMs != null && activeMetrics.dnsMs < baseMetrics.dnsMs - 10,
+                        worse: baseMetrics.dnsMs != null && activeMetrics.dnsMs != null && activeMetrics.dnsMs > baseMetrics.dnsMs + 25,
+                      },
+                    ].map((row) => (
+                      <div key={row.label} className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5 space-y-1">
+                        <div className="text-[10px] text-[var(--cs-ink-muted)] font-sans">{row.label}</div>
+                        <div className="text-xs font-bold text-[var(--cs-ink)]">
+                          {row.before} → {row.after}
+                        </div>
+                        <div
+                          className={`text-[10px] font-sans font-semibold ${
+                            row.better
+                              ? 'text-[var(--cs-ok-ink)]'
+                              : row.worse
+                                ? 'text-[var(--cs-danger-ink)]'
+                                : 'text-[var(--cs-ink-muted)]'
+                          }`}
+                        >
+                          {row.better ? 'Improved' : row.worse ? 'Worsened' : 'Unchanged'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Provenance Banner */}
               <div
                 className={`cs-panel p-4 space-y-3 border-l-[4px] ${
@@ -695,11 +805,30 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
 
         {/* Chronological Snapshot History Rail */}
         <aside className="lg:col-span-4 cs-panel overflow-hidden flex flex-col max-h-[780px]">
-          <div className="px-4 py-3 border-b border-[var(--cs-border)] bg-[var(--cs-chassis)] flex items-center justify-between">
-            <h2 className="cs-heading text-sm font-bold text-[var(--cs-ink)]">Snapshot history</h2>
-            <span className="font-mono text-[11px] cs-tabular px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-muted)]">
-              {history.length}
-            </span>
+          <div className="px-4 py-3 border-b border-[var(--cs-border)] bg-[var(--cs-chassis)] space-y-2">
+            <div className="flex items-center justify-between">
+              <h2 className="cs-heading text-sm font-bold text-[var(--cs-ink)]">Snapshot history</h2>
+              <span className="font-mono text-[11px] cs-tabular px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-muted)]">
+                {history.length}
+              </span>
+            </div>
+            {history.length >= 2 && (
+              <select
+                value={compareBaselineId}
+                onChange={(e) => setCompareBaselineId(e.target.value)}
+                aria-label="Compare active snapshot against baseline"
+                className="cs-input w-full px-2.5 py-1.5 text-[11px]"
+              >
+                <option value="">Compare active snapshot against...</option>
+                {history
+                  .filter((h) => h.id !== active?.id)
+                  .map((h) => (
+                    <option key={h.id} value={h.id}>
+                      {h.toolId} ({new Date(h.collectedAt).toLocaleTimeString()})
+                    </option>
+                  ))}
+              </select>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto divide-y divide-[var(--cs-border)]">

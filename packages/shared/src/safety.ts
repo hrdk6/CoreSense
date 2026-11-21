@@ -1,5 +1,3 @@
-import type { ExpertiseMode } from './types.js';
-
 // ============================================================================
 // Hardware Repair Safety Policy & Hazard Classifier
 // CoreSense takes physical electronics safety seriously: high-voltage mains,
@@ -29,10 +27,8 @@ interface HazardRule {
   severity: HazardSeverity;
   patterns: RegExp[];
   riskExplanation: string;
-  everydayGuidance: string;
-  technicianGuidance: string;
-  blockForEveryday: boolean;
-  blockForAll: boolean;
+  safeGuidance: string;
+  blockDirect: boolean;
 }
 
 const HAZARD_RULES: HazardRule[] = [
@@ -46,13 +42,10 @@ const HAZARD_RULES: HazardRule[] = [
       /\b(poke|puncture|stab|squeeze|flatten|drain with needle)\b.{0,30}\b(battery|cell)\b/i,
     ],
     riskExplanation:
-      'Damaged or swollen lithium-ion cells contain flammable electrolyte and pressurized gas. Puncturing, bending, charging, or prying them can trigger violent thermal runaway, toxic fumes, and fire.',
-    everydayGuidance:
-      'STOP immediately. Do NOT charge the device, press down on the battery, or attempt to puncture or pry it out. Power the device down safely if possible, move it away from flammable materials to a well-ventilated area, and take it to an authorized repair center or certified battery recycling facility.',
-    technicianGuidance:
-      'Treat as an active thermal-runaway hazard. Isolate power immediately, do not apply heat or metal pry tools directly to the pouch cell, keep a Class D/sand containment tray available, discharge safely only if undamaged, and transfer immediately to hazardous e-waste containment. Never puncture or compress a swollen cell.',
-    blockForEveryday: true,
-    blockForAll: true,
+      'Damaged or swollen lithium-ion cells contain flammable electrolyte and pressurized gas. Puncturing, bending, charging, applying heat, or prying them can trigger violent thermal runaway, toxic fumes, and fire.',
+    safeGuidance:
+      'STOP immediately. Do NOT charge the device, compress the battery, apply heat/metal pry tools to the cell, or attempt to puncture it. Power off safely, move it away from flammable surfaces to a well-ventilated area, and bring it to an authorized repair shop or certified hazardous battery recycler.',
+    blockDirect: true,
   },
   {
     code: 'HIGH_VOLTAGE_PSU_CAPACITOR',
@@ -64,13 +57,10 @@ const HAZARD_RULES: HazardRule[] = [
       /\b(bypass|bridge|foil|jumper)\b.{0,25}\b(fuse|breaker|thermal cutoff)\b/i,
     ],
     riskExplanation:
-      'Mains-powered equipment, desktop PSUs, CRT flybacks, and microwave capacitors store lethal DC voltages (300V–25,000V+) even after being unplugged from the wall. Bypassing fuses removes critical fire and electrocution protection.',
-    everydayGuidance:
-      'DO NOT open the power supply enclosure or probe internal components. Lethal voltage can remain stored inside capacitors even when unplugged. Replace sealed power supplies as complete UL/CE-listed units or consult a licensed electronics technician.',
-    technicianGuidance:
-      'Lethal primary-side energy hazard (320V–400V DC bus on PFC/SMPS primaries; >2kV in microwaves/CRTs). Never bypass safety fuses or work without an isolation transformer, CAT-III rated probes, verified discharge through an appropriate high-wattage bleed resistor, and zero-voltage verification with a calibrated multimeter. For sealed consumer ATX/laptop PSUs, full unit replacement is strongly advised over live internal repair.',
-    blockForEveryday: true,
-    blockForAll: false,
+      'Mains-powered equipment, desktop SMPS/ATX PSUs (320V–400V DC primary bus), CRT flybacks, and microwave capacitors store lethal energy even when unplugged. Bypassing fuses removes critical fire and electrocution protection.',
+    safeGuidance:
+      'DO NOT open sealed power supplies or bridge blown fuses. Lethal voltage remains stored in primary bulk capacitors after unplugging. Replace sealed PSUs/adapters with UL/CE-listed units or hand off to a licensed electronics technician equipped with an isolation transformer, CAT-III probes, and bleed-resistor discharge verification.',
+    blockDirect: true,
   },
   {
     code: 'LIVE_LIQUID_DAMAGE',
@@ -81,36 +71,27 @@ const HAZARD_RULES: HazardRule[] = [
       /\b(charging|plugged in)\b.{0,30}\b(wet|water|liquid|spilled)\b/i,
     ],
     riskExplanation:
-      'Applying power or charging a wet device causes rapid electrochemical corrosion, internal short circuits, and potential battery overheating or electric shock.',
-    everydayGuidance:
-      'Unplug the charger safely (from the wall first if the cable is wet), power off the device immediately, and do NOT try to charge it or dry it with a hot hair dryer/oven (and avoid rice, which introduces dust and starch). Have the board inspected and cleaned professionally before re-energizing.',
-    technicianGuidance:
-      'Keep power and battery disconnected immediately. Do not power-cycle to "test". Disassemble, inspect under magnification for corrosion around power rails/PMICs, clean with high-purity isopropyl alcohol (99%) or ultrasonic bath where appropriate, verify no dead shorts on main rails before applying current-limited bench power.',
-    blockForEveryday: true,
-    blockForAll: false,
+      'Applying power or charging wet electronics causes immediate electrochemical corrosion across power rails, internal short circuits, battery overheating, or electric shock.',
+    safeGuidance:
+      'Unplug from the wall safely, power off and disconnect the battery immediately if accessible, and do NOT charge, power-cycle to "test", or use a hair dryer/oven/rice. Inspect for corrosion under magnification, clean with 99% isopropyl alcohol (or ultrasonic cleaning by a board repair shop), and verify no rail shorts before re-energizing.',
+    blockDirect: true,
   },
   {
     code: 'BOARD_LEVEL_SOLDERING_REWORK',
-    title: 'Board-Level Soldering / Hot-Air Rework Risk',
+    title: 'Board-Level Soldering / Hot-Air Rework Caution',
     severity: 'caution',
     patterns: [
       /\b(solder|desolder|reflow|reball|hot air|bga|microsolder|micro-solder|jumper wire|replace mosfet|replace ic|replace capacitor on motherboard)\b/i,
     ],
     riskExplanation:
-      'Motherboard rework involves 300–400°C tools, toxic flux/lead fumes, ESD damage risks, and potential trace lifting or shorting neighboring power rails.',
-    everydayGuidance:
-      'Board-level soldering requires specialized ESD-safe tools, fume extraction, and magnification. Attempting DIY reflow (especially using household ovens or heat guns) frequently causes permanent board delamination or toxic exposure. Consider an independent micro-soldering specialist.',
-    technicianGuidance:
-      'Ensure ESD grounding, active fume extraction, pre-heating where appropriate, and thermal protection (Kapton tape/shields) around adjacent plastic connectors and BGA packages. Verify rail impedance to ground before reapplying power.',
-    blockForEveryday: true,
-    blockForAll: false,
+      'Motherboard rework involves 300–400°C tools, toxic flux/lead fumes, ESD sensitivity, and risk of lifting PCB pads or shorting adjacent power rails.',
+    safeGuidance:
+      'Only attempt board-level rework with ESD grounding, active fume extraction, temperature-controlled soldering/hot-air tools, Kapton shielding around nearby plastic connectors, and post-rework rail impedance verification before powering on. Never use household ovens or paint heat guns to "reflow" boards.',
+    blockDirect: false,
   },
 ];
 
-export function evaluateHardwareSafety(
-  inputText: string,
-  expertiseMode: ExpertiseMode,
-): SafetyAssessment {
+export function evaluateHardwareSafety(inputText: string): SafetyAssessment {
   const matched: SafetyAssessment['hazards'] = [];
   let blockDirect = false;
   let highest: HazardSeverity | null = null;
@@ -123,11 +104,7 @@ export function evaluateHardwareSafety(
 
   for (const rule of HAZARD_RULES) {
     if (rule.patterns.some((rx) => rx.test(inputText))) {
-      const safeGuidance =
-        expertiseMode === 'technician' ? rule.technicianGuidance : rule.everydayGuidance;
-      const shouldBlock =
-        rule.blockForAll || (expertiseMode === 'everyday' && rule.blockForEveryday);
-      if (shouldBlock) blockDirect = true;
+      if (rule.blockDirect) blockDirect = true;
       if (!highest || rank[rule.severity] > rank[highest]) {
         highest = rule.severity;
       }
@@ -136,8 +113,8 @@ export function evaluateHardwareSafety(
         title: rule.title,
         severity: rule.severity,
         riskExplanation: rule.riskExplanation,
-        safeGuidance,
-        requiresProfessionalReferral: shouldBlock || rule.severity === 'critical_stop',
+        safeGuidance: rule.safeGuidance,
+        requiresProfessionalReferral: rule.blockDirect || rule.severity === 'critical_stop',
       });
     }
   }

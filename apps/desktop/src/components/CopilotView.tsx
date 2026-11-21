@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   BookOpen,
   CheckCircle2,
+  ClipboardPlus,
   Download,
   FileCheck2,
   Image as ImageIcon,
@@ -11,6 +12,7 @@ import {
   MicOff,
   Play,
   Plus,
+  Printer,
   Send,
   ShieldAlert,
   Trash2,
@@ -18,7 +20,7 @@ import {
   VolumeX,
   X,
 } from 'lucide-react';
-import type { EvidenceItem, ExpertiseMode, Hypothesis, VerificationReport } from '@coresense/shared';
+import type { EvidenceItem, Hypothesis, VerificationReport } from '@coresense/shared';
 import { apiRequest } from '../api';
 import { MarkdownBlock } from './MarkdownBlock';
 
@@ -36,7 +38,6 @@ interface InvestigationSummary {
   deviceName: string | null;
   title: string;
   initialSymptom: string;
-  expertiseMode: ExpertiseMode;
   status: string;
   verificationOutcome: string | null;
   hypothesisCount: number;
@@ -75,7 +76,6 @@ interface InvestigationDetail {
   deviceId: string | null;
   title: string;
   initialSymptom: string;
-  expertiseMode: ExpertiseMode;
   status: string;
   verificationOutcome: string | null;
   verificationReport: VerificationReport | null;
@@ -121,8 +121,7 @@ function provenanceStyle(type: string): string {
 
 export const CopilotView: React.FC<{
   devices: DeviceOption[];
-  expertiseMode: ExpertiseMode;
-}> = ({ devices, expertiseMode }) => {
+}> = ({ devices }) => {
   const [investigations, setInvestigations] = useState<InvestigationSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<InvestigationDetail | null>(null);
@@ -143,6 +142,9 @@ export const CopilotView: React.FC<{
   const [verifyStatus, setVerifyStatus] = useState<'resolved' | 'improved' | 'unchanged' | 'worsened' | 'unknown'>('resolved');
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [caseNotice, setCaseNotice] = useState<string | null>(null);
+  const [reportModalMd, setReportModalMd] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
@@ -232,19 +234,76 @@ export const CopilotView: React.FC<{
     rec.start();
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const attachImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      setError('Only PNG, JPEG, or WebP images can be attached for visual inspection.');
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       setImagePreview({
         base64: String(reader.result || ''),
         mimeType: file.type || 'image/png',
-        filename: file.name,
+        filename: file.name || `clipboard-${Date.now()}.png`,
       });
     };
     reader.readAsDataURL(file);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    attachImageFile(file);
     e.target.value = '';
+  };
+
+  const handlePasteImage = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (file) {
+          attachImageFile(file);
+          e.preventDefault();
+          break;
+        }
+      }
+    }
+  };
+
+  const handleDropImage = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) attachImageFile(file);
+  };
+
+  const handlePromoteToCase = async () => {
+    if (!detail) return;
+    setCaseNotice(null);
+    try {
+      const leadHyp = detail.hypotheses[0]?.title;
+      await apiRequest('/api/v1/cases', {
+        method: 'POST',
+        body: {
+          deviceId: detail.deviceId || undefined,
+          investigationId: detail.id,
+          title: detail.title.slice(0, 150),
+          symptomSummary: `${detail.initialSymptom}${leadHyp ? ` | Leading hypothesis: ${leadHyp}` : ''}`,
+          status: detail.verificationOutcome === 'requires_professional_inspection' ? 'referred_pro' : 'investigating',
+        },
+      });
+      setCaseNotice('Repair case created from this investigation. Open "Repair cases" to track notes & expenses.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create repair case.');
+    }
+  };
+
+  const handleOpenPrintableReport = async () => {
+    if (!selectedId) return;
+    const res = await apiRequest<{ markdown: string }>(`/api/v1/investigations/${selectedId}/report`);
+    setReportModalMd(res.markdown);
   };
 
   const handleSend = async (e?: React.FormEvent, overrideText?: string) => {
@@ -263,7 +322,6 @@ export const CopilotView: React.FC<{
           body: {
             initialSymptom: text,
             deviceId: selectedDeviceId || undefined,
-            expertiseMode,
             inputModality: imagePreview ? 'image' : listening ? 'voice' : 'text',
             imageBase64: imagePreview?.base64,
             imageMimeType: imagePreview?.mimeType,
@@ -478,8 +536,8 @@ export const CopilotView: React.FC<{
                     </button>
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
-                    <span className="px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-muted)] capitalize">
-                      {inv.expertiseMode}
+                    <span className="px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-muted)] font-mono cs-tabular">
+                      {inv.evidenceCount} evidence
                     </span>
                     {inv.deviceName && (
                       <span className="px-1.5 py-0.5 rounded bg-[var(--cs-accent-soft)] text-[var(--cs-accent-ink)] truncate max-w-[110px]">
@@ -513,7 +571,7 @@ export const CopilotView: React.FC<{
               {detail ? detail.title : 'New repair investigation'}
             </h1>
             <div className="flex items-center gap-2 mt-0.5 text-xs text-[var(--cs-ink-muted)]">
-              <span className="capitalize">{detail?.expertiseMode || expertiseMode} depth</span>
+              <span>{detail ? `${detail.hypotheses.length} hypotheses` : 'Evidence-based diagnostic session'}</span>
               {detail && (
                 <span className="font-mono text-[11px] cs-tabular px-1.5 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-2)]">
                   {detail.evidence.length} evidence
@@ -552,15 +610,35 @@ export const CopilotView: React.FC<{
               {speakReplies ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
             </button>
             {selectedId && (
-              <button
-                type="button"
-                onClick={handleExportReport}
-                title="Export diagnostic report (.md)"
-                className="cs-btn-secondary flex items-center gap-1.5 px-2.5 py-1.5 text-xs cursor-pointer"
-              >
-                <Download className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Export</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handlePromoteToCase}
+                  title="Promote investigation to a tracked repair case"
+                  className="cs-btn-secondary flex items-center gap-1.5 px-2.5 py-1.5 text-xs cursor-pointer"
+                >
+                  <ClipboardPlus className="h-3.5 w-3.5" />
+                  <span className="hidden xl:inline">Repair case</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenPrintableReport}
+                  title="Preview printable diagnostic report / save PDF"
+                  className="cs-btn-secondary flex items-center gap-1.5 px-2.5 py-1.5 text-xs cursor-pointer"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  <span className="hidden xl:inline">Report</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportReport}
+                  title="Download Markdown report (.md)"
+                  className="cs-btn-secondary flex items-center gap-1.5 px-2.5 py-1.5 text-xs cursor-pointer"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Export</span>
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -737,11 +815,27 @@ export const CopilotView: React.FC<{
           )}
         </div>
 
-        {/* Bottom Grounded Input Composer */}
+        {/* Bottom Grounded Input Composer (Supports Ctrl+V Screenshot Paste & Drag-and-Drop) */}
         <form
           onSubmit={handleSend}
-          className="shrink-0 px-5 py-3.5 border-t border-[var(--cs-border)] bg-[var(--cs-surface)] space-y-2.5"
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragActive(true);
+          }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={handleDropImage}
+          className={`shrink-0 px-5 py-3.5 border-t border-[var(--cs-border)] bg-[var(--cs-surface)] space-y-2.5 transition-colors ${
+            dragActive ? 'bg-[var(--cs-accent-soft)] border-t-[var(--cs-accent)]' : ''
+          }`}
         >
+          {caseNotice && (
+            <div className="rounded-lg bg-[var(--cs-ok-soft)] border border-[var(--cs-ok-border)] px-3 py-2 text-xs text-[var(--cs-ok-ink)] flex items-center justify-between gap-2 cs-animate-view">
+              <span>{caseNotice}</span>
+              <button type="button" onClick={() => setCaseNotice(null)} className="cursor-pointer">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           {error && (
             <div className="rounded-lg bg-[var(--cs-danger-soft)] border border-[var(--cs-danger-border)] px-3 py-2 text-xs text-[var(--cs-danger-ink)] flex items-center justify-between gap-2 cs-animate-view">
               <span>{error}</span>
@@ -809,7 +903,8 @@ export const CopilotView: React.FC<{
               type="text"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Describe symptoms, paste an error code, or ask about a component..."
+              onPaste={handlePasteImage}
+              placeholder="Describe symptoms, paste a screenshot (Ctrl+V), error code, or component..."
               className="cs-input flex-1 min-w-0 h-10 px-3.5 text-sm"
             />
             <button
@@ -1080,7 +1175,7 @@ export const CopilotView: React.FC<{
               <button
                 type="button"
                 onClick={() => executeProposedTool(approvalModalTool, true)}
-                className="px-4 py-2 rounded-lg bg-[var(--cs-warn)] text-white font-semibold text-xs hover:opacity-90 cursor-pointer"
+                className="px-4 py-2 rounded-lg bg-[var(--cs-warn)] text-[var(--cs-accent-on)] font-semibold text-xs hover:opacity-90 cursor-pointer"
               >
                 Approve and run
               </button>
@@ -1155,6 +1250,52 @@ export const CopilotView: React.FC<{
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Printable Clean Diagnostic Report Preview Modal */}
+      {reportModalMd && (
+        <div className="fixed inset-0 z-50 bg-[var(--cs-scrim)] flex items-center justify-center p-4 cs-animate-backdrop">
+          <div className="cs-panel max-w-3xl w-full max-h-[85vh] flex flex-col overflow-hidden cs-animate-modal">
+            <div className="px-5 py-3.5 border-b border-[var(--cs-border)] bg-[var(--cs-chassis)] flex items-center justify-between gap-2">
+              <div>
+                <h3 className="cs-heading text-sm font-bold text-[var(--cs-ink)]">
+                  CoreSense Diagnostic Investigation Report
+                </h3>
+                <p className="text-[11px] text-[var(--cs-ink-muted)]">
+                  Evidence-backed report ready for printing, PDF export, or repair-shop review
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="cs-btn-primary flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer"
+                >
+                  <Printer className="h-3.5 w-3.5" />
+                  <span>Print / Save PDF</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExportReport}
+                  className="cs-btn-secondary flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  <span>.md</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportModalMd(null)}
+                  className="p-1.5 text-[var(--cs-ink-muted)] hover:text-[var(--cs-ink)] cursor-pointer"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-6 bg-[var(--cs-surface)]">
+              <MarkdownBlock content={reportModalMd} />
+            </div>
+          </div>
         </div>
       )}
     </div>

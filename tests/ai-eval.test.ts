@@ -21,10 +21,9 @@ describe('CoreSense AI Diagnostic & Safety Evaluation Suite (All 17 Required Sce
       method: 'POST',
       url: '/api/v1/auth/register',
       payload: {
-        email: 'eval-everyday@example.com',
+        email: 'eval-user-1@example.com',
         password: 'EvalPassword#123',
-        displayName: 'Everyday Evaluator',
-        expertiseMode: 'everyday',
+        displayName: 'Primary Evaluator',
         externalAiConsent: false,
       },
     });
@@ -34,10 +33,9 @@ describe('CoreSense AI Diagnostic & Safety Evaluation Suite (All 17 Required Sce
       method: 'POST',
       url: '/api/v1/auth/register',
       payload: {
-        email: 'eval-tech@example.com',
+        email: 'eval-user-2@example.com',
         password: 'EvalPassword#123',
-        displayName: 'Tech Evaluator',
-        expertiseMode: 'technician',
+        displayName: 'Secondary Evaluator',
         externalAiConsent: false,
       },
     });
@@ -302,5 +300,49 @@ describe('CoreSense AI Diagnostic & Safety Evaluation Suite (All 17 Required Sce
     expect(verified.statusCode).toBe(200);
     expect(verified.json().verificationReport.outcome).toBe('verified_resolved');
     expect(verified.json().verificationReport.metricComparisons.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('Scenario 18: Hardware Error-Code, PCB Silkscreen & USB-C PD Decoder + Multi-Turn Adaptive Follow-Up', async () => {
+    // 1. Decode exact BSOD hex code + PCB silkscreen designator + USB-C 5V 0.00A reading
+    const techInv = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/investigations',
+      headers: { Authorization: `Bearer ${techToken}` },
+      payload: {
+        initialSymptom:
+          'Laptop crashes with 0x00000124 WHEA_UNCORRECTABLE_ERROR and on the charging board Q301 near F1 stays at 5V 0.00A on my USB-C meter.',
+      },
+    });
+    expect(techInv.statusCode).toBe(201);
+    const tb = techInv.json();
+    expect(tb.assistantMessage.content).toContain('WHEA_UNCORRECTABLE_ERROR');
+    expect(tb.assistantMessage.content).toContain('Q301');
+    expect(tb.assistantMessage.content).toContain('F1');
+    expect(tb.hypotheses.some((h: any) => h.title.includes('USB-C PD Negotiation Failure'))).toBe(true);
+
+    // 2. Multi-turn mobile Wi-Fi follow-up: Turn 1 asks clarifying checks -> Turn 2 grayed out + Bluetooth dead strengthens hardware hypothesis!
+    const wifiTurn1 = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/investigations',
+      headers: { Authorization: `Bearer ${everydayToken}` },
+      payload: { initialSymptom: "My phone's Wi-Fi stopped working." },
+    });
+    const wifiId = wifiTurn1.json().investigation.id;
+
+    const wifiTurn2 = await ctx.app.inject({
+      method: 'POST',
+      url: `/api/v1/investigations/${wifiId}/messages`,
+      headers: { Authorization: `Bearer ${everydayToken}` },
+      payload: {
+        message: 'The Wi-Fi toggle is grayed out and Bluetooth also stopped working after I dropped the phone.',
+      },
+    });
+    expect(wifiTurn2.statusCode).toBe(200);
+    const t2 = wifiTurn2.json();
+    const hwHyp = t2.hypotheses.find((h: any) => h.category === 'mobile_network_hardware');
+    const swHyp = t2.hypotheses.find((h: any) => h.category === 'mobile_network_software');
+    expect(hwHyp.status).toBe('strengthened');
+    expect(swHyp.status).toBe('weakened');
+    expect(t2.requiresProfessionalInspection).toBe(true);
   });
 });

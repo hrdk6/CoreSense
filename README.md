@@ -9,14 +9,14 @@
 |---|---|---|---|
 | `packages/shared` | Domain schemas (Zod), validated Diagnostic Tool Registry, Hardware Safety Policy, Privacy Telemetry Scrubber | TypeScript | Library |
 | `packages/diagnostics-core` | Read-only cross-platform OS collectors (CPU, RAM, Storage/SMART, Network/DNS/Wi-Fi, OS Event Logs, Battery) + clearly labeled Simulation Fixtures | TypeScript / OS Native CIM / POSIX | Library |
-| `apps/api` | Unified Backend with physically isolated `coresense_customer.db` and `coresense_owner.db`, AI Copilot (Gemini 4 Interactions API / OpenAI / Local Engine), FTS5+Vector RAG, Delta Sync, Billing | Fastify + Node 24 SQLite + `@google/genai` | `http://127.0.0.1:4000` |
+| `apps/api` | Unified Backend with physically isolated `coresense_customer.db` and `coresense_owner.db`, AI Copilot (Gemini 4 Interactions API / OpenAI / Ollama / Local Engine), FTS5+Vector RAG, Delta Sync | Fastify + Node 24 SQLite + `@google/genai` | `http://127.0.0.1:4000` |
 | `apps/desktop` | Installable Native Desktop Application with Rust `sysinfo` diagnostic commands, AI Copilot Workbench, Live Diagnostics, Device Library, Manuals, Repair Cases, Offline Cache & Sync | Tauri v2 (Rust) + React 19 + Tailwind v4 + Recharts | `http://127.0.0.1:5173` |
 | `apps/mobile` | Portable Repair Companion for iOS, Android & Mobile Web — Permitted Phone Checks (Battery, Network, Mic, Speaker, Display/Touch, Camera, Motion), Camera Board Capture, Voice Copilot & Sync | Capacitor 7 (iOS/Android) + React 19 + Tailwind v4 | `http://127.0.0.1:8081` |
-| `apps/owner-console` | Completely separate Private Owner Observability Console — Downloads vs Activations, DAU/WAU/MAU, Retention, Funnel, MRR/ARR, AI Cost Ledger, Crashes, Feedback, Dynamic Plan Editor & TOTP MFA | Standalone React 19 + Tailwind v4 + Recharts | `http://127.0.0.1:5175` |
+| `apps/owner-console` | Completely separate Private Owner Observability Console — Downloads vs Activations, DAU/WAU/MAU, Retention, Funnel, AI Cost Ledger, Crashes, Feedback, Alert Thresholds & TOTP MFA | Standalone React 19 + Tailwind v4 + Recharts | `http://127.0.0.1:5175` |
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env` (optional: add `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `STRIPE_SECRET_KEY`; CoreSense works fully offline with its built-in **CoreSense Local Diagnostic Engine** when no external keys are set).
+1. Copy `.env.example` to `.env` (optional: add `GEMINI_API_KEY` or `OPENAI_API_KEY`; CoreSense is 100% free with unlimited features and works fully offline with its built-in **CoreSense Local Diagnostic Engine** when no external keys are set).
 2. Install & build all packages:
    ```bash
    npm install

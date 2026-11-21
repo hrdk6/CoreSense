@@ -65,8 +65,7 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       payload: {
         email: 'alice@example.com',
         password: 'StrongPassword#123',
-        displayName: 'Alice Technician',
-        expertiseMode: 'technician',
+        displayName: 'Alice Rivera',
         platform: 'windows',
         installId: 'desk-install-unique-001',
       },
@@ -103,8 +102,7 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       payload: {
         email: 'bob@example.com',
         password: 'BobPassword#999',
-        displayName: 'Bob Owner',
-        expertiseMode: 'everyday',
+        displayName: 'Bob Carter',
         platform: 'ios',
       },
     });
@@ -134,6 +132,23 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       payload: { email: 'bob@example.com', password: 'BobNewPassword#2026' },
     });
     expect(loginNew.statusCode).toBe(200);
+
+    // Verify AI provider test endpoint & commercial release manifest endpoint
+    const aiTest = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/account/test-ai',
+      headers: { Authorization: `Bearer ${userBToken}` },
+      payload: { provider: 'coresense-local' },
+    });
+    expect(aiTest.statusCode).toBe(200);
+    expect(aiTest.json().ok).toBe(true);
+
+    const releaseRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/releases/latest',
+    });
+    expect(releaseRes.statusCode).toBe(200);
+    expect(releaseRes.json().desktop.version).toBe('1.0.0');
   });
 
   it('3. Runs genuine local Windows/OS diagnostics and strictly enforces tool registry security & approval gates', async () => {
@@ -305,15 +320,23 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
     expect(pushConflict.json().conflicts[0].serverRevision).toBe(2);
   });
 
-  it('7. Connects subscriptions, dynamic plans, feedback, Owner Console MFA, and proves hard customer-data privacy separation', async () => {
-    // Customer upgrades to Pro plan
-    const subRes = await ctx.app.inject({
-      method: 'POST',
-      url: '/api/v1/billing/subscribe',
-      headers: { Authorization: `Bearer ${userAToken}` },
-      payload: { planTier: 'pro', billingCycle: 'monthly', provider: 'sandbox' },
+  it('7. Verifies 100% free unlimited access, feedback, Owner Console MFA, and hard customer-data privacy separation', async () => {
+    // Confirm paid billing & role gating endpoints are completely removed
+    const removedPlans = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/billing/plans',
     });
-    expect(subRes.statusCode).toBe(200);
+    expect(removedPlans.statusCode).toBe(404);
+
+    const meRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/account/me',
+      headers: { Authorization: `Bearer ${userAToken}` },
+    });
+    expect(meRes.statusCode).toBe(200);
+    expect(meRes.json().plan).toBeUndefined();
+    expect(meRes.json().user.planTier).toBeUndefined();
+    expect(meRes.json().user.expertiseMode).toBeUndefined();
 
     // Customer submits voluntary feedback
     const fbRes = await ctx.app.inject({
@@ -364,7 +387,7 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
     });
     expect(mfaEnable.statusCode).toBe(200);
 
-    // Owner Overview verifies strictly separated downloads (2) vs first activations (1) vs registered (2) + real MRR ($14.99)
+    // Owner Overview verifies strictly separated downloads (2) vs first activations (1) vs registered (2) with zero paid-plan KPIs
     const ov = await ctx.app.inject({
       method: 'GET',
       url: '/owner-api/v1/overview?range=30d',
@@ -375,15 +398,24 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
     expect(kpis.installerDownloads).toBe(2);
     expect(kpis.firstActivations).toBe(1);
     expect(kpis.totalRegisteredUsers).toBe(2);
-    expect(kpis.paidSubscribers).toBe(1);
-    expect(kpis.mrrUsd).toBe(14.99);
+    expect(typeof kpis.totalScans).toBe('number');
+    expect(typeof kpis.totalInvestigations).toBe('number');
+    expect(kpis.paidSubscribers).toBeUndefined();
+    expect(kpis.mrrUsd).toBeUndefined();
+
+    // Revenue endpoint removed
+    const removedRev = await ctx.app.inject({
+      method: 'GET',
+      url: '/owner-api/v1/revenue?range=30d',
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    expect(removedRev.statusCode).toBe(404);
 
     // Verify ALL remaining Owner Console endpoints return HTTP 200 (zero SQL errors)
     for (const ownerEp of [
       '/owner-api/v1/downloads?range=30d',
       '/owner-api/v1/users?range=30d',
       '/owner-api/v1/engagement?range=30d',
-      '/owner-api/v1/revenue?range=30d',
       '/owner-api/v1/ai-costs?range=30d',
       '/owner-api/v1/reliability?range=30d',
       '/owner-api/v1/feedback',

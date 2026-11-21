@@ -319,7 +319,7 @@ export const PhoneDiagnosticsTab: React.FC<{
             onClick={() => setSpeakerStatus('pass')}
             className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
               speakerStatus === 'pass'
-                ? 'bg-[var(--cs-ok)] border-[var(--cs-ok)] text-white'
+                ? 'bg-[var(--cs-ok)] border-[var(--cs-ok)] text-[var(--cs-accent-on)]'
                 : 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
             }`}
           >
@@ -330,7 +330,7 @@ export const PhoneDiagnosticsTab: React.FC<{
             onClick={() => setSpeakerStatus('fail')}
             className={`flex-1 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
               speakerStatus === 'fail'
-                ? 'bg-[var(--cs-danger)] border-[var(--cs-danger)] text-white'
+                ? 'bg-[var(--cs-danger)] border-[var(--cs-danger)] text-[var(--cs-accent-on)]'
                 : 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
             }`}
           >
@@ -361,9 +361,10 @@ export const PhoneDiagnosticsTab: React.FC<{
             return (
               <div
                 key={idx}
-                className="rounded-[2px] transition-colors duration-75"
+                className="rounded-[2px] border transition-colors duration-75"
                 style={{
                   backgroundColor: lit ? segColor : 'var(--cs-well)',
+                  borderColor: lit ? segColor : 'var(--cs-border)',
                 }}
               />
             );

@@ -3,7 +3,6 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  type PlanConfig,
   type ProductTelemetryEvent,
   scrubSensitiveStrings,
   scrubTelemetryMetadata,
@@ -11,67 +10,10 @@ import {
 import { hashPassword } from '../security/crypto.js';
 
 // ============================================================================
-// Physically Separate Owner Observability & Business Operations Database
-// STRICT PRIVACY BOUNDARY: Never stores customer emails (except voluntary
-// owner admin login), prompts, responses, photographs, manuals, or device data.
+// Physically Separate Owner Observability Database
+// STRICT PRIVACY BOUNDARY: Never stores customer emails (except owner admin),
+// prompts, responses, photographs, manuals, or personal device data.
 // ============================================================================
-
-const DEFAULT_PLANS: PlanConfig[] = [
-  {
-    tier: 'free',
-    displayName: 'CoreSense Free',
-    description: 'Essential local diagnostics, personal device library, and AI repair guidance for everyday device care.',
-    monthlyPriceCents: 0,
-    annualPriceCents: 0,
-    currency: 'USD',
-    limits: {
-      aiMessagesPerMonth: 150,
-      imageAnalysesPerMonth: 25,
-      documentUploadsMax: 10,
-      maxDevices: 10,
-      cloudSyncEnabled: true,
-      advancedDiagnosticExport: true,
-      voiceCopilotEnabled: true,
-    },
-    active: true,
-  },
-  {
-    tier: 'pro',
-    displayName: 'CoreSense Pro',
-    description: 'Expanded multimodal diagnostics, service-manual RAG indexing, cross-device sync, and full repair reporting.',
-    monthlyPriceCents: 1499,
-    annualPriceCents: 14900,
-    currency: 'USD',
-    limits: {
-      aiMessagesPerMonth: 2000,
-      imageAnalysesPerMonth: 250,
-      documentUploadsMax: 100,
-      maxDevices: 50,
-      cloudSyncEnabled: true,
-      advancedDiagnosticExport: true,
-      voiceCopilotEnabled: true,
-    },
-    active: true,
-  },
-  {
-    tier: 'premium',
-    displayName: 'CoreSense Workbench',
-    description: 'High-volume board-level vision, priority frontier reasoning, unlimited personal manuals, and deep repair archives.',
-    monthlyPriceCents: 2999,
-    annualPriceCents: 29900,
-    currency: 'USD',
-    limits: {
-      aiMessagesPerMonth: 10000,
-      imageAnalysesPerMonth: 1500,
-      documentUploadsMax: 500,
-      maxDevices: 250,
-      cloudSyncEnabled: true,
-      advancedDiagnosticExport: true,
-      voiceCopilotEnabled: true,
-    },
-    active: true,
-  },
-];
 
 export class OwnerDatabase {
   public readonly db: DatabaseSync;
@@ -277,15 +219,6 @@ export class OwnerDatabase {
         );
     }
 
-    for (const plan of DEFAULT_PLANS) {
-      const exists = this.db.prepare('SELECT tier FROM plan_configs WHERE tier = ?').get(plan.tier);
-      if (!exists) {
-        this.db
-          .prepare('INSERT INTO plan_configs (tier, config_json, updated_at) VALUES (?, ?, ?)')
-          .run(plan.tier, JSON.stringify(plan), now);
-      }
-    }
-
     const defaultAlerts = [
       { id: 'alert-ai-budget', metric_key: 'monthly_ai_cost_usd', label: 'Monthly AI Spend Budget', threshold_value: 250, unit: 'USD' },
       { id: 'alert-error-rate', metric_key: 'api_5xx_rate_percent', label: 'API 5xx Error Rate', threshold_value: 2.0, unit: '%' },
@@ -304,7 +237,6 @@ export class OwnerDatabase {
       latestDesktopVersion: '1.0.0',
       latestMobileVersion: '1.0.0',
       maintenanceMode: false,
-      defaultFreeTrialDays: 14,
       telemetryRetentionDays: 365,
     };
     for (const [k, v] of Object.entries(defaultConfig)) {
@@ -312,21 +244,6 @@ export class OwnerDatabase {
         .prepare('INSERT OR IGNORE INTO product_config (key, value_json, updated_at) VALUES (?, ?, ?)')
         .run(k, JSON.stringify(v), now);
     }
-  }
-
-  public getPlans(): PlanConfig[] {
-    const rows = this.db.prepare('SELECT config_json FROM plan_configs').all() as Array<{ config_json: string }>;
-    const order: Record<string, number> = { free: 0, pro: 1, premium: 2 };
-    return rows
-      .map((r) => JSON.parse(r.config_json) as PlanConfig)
-      .sort((a, b) => (order[a.tier] ?? 9) - (order[b.tier] ?? 9));
-  }
-
-  public getPlan(tier: string): PlanConfig | undefined {
-    const row = this.db.prepare('SELECT config_json FROM plan_configs WHERE tier = ?').get(tier) as
-      | { config_json: string }
-      | undefined;
-    return row ? (JSON.parse(row.config_json) as PlanConfig) : undefined;
   }
 
   public recordProductEvent(event: ProductTelemetryEvent): void {
@@ -338,7 +255,7 @@ export class OwnerDatabase {
           id, event_name, anonymous_install_id, anonymous_user_hash, platform,
           app_version, expertise_mode, duration_ms, success, error_category,
           country_code, metadata_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         crypto.randomUUID(),
@@ -347,7 +264,6 @@ export class OwnerDatabase {
         event.anonymousUserHash ?? null,
         event.platform,
         event.appVersion,
-        event.expertiseMode ?? null,
         event.durationMs ?? null,
         event.success ? 1 : 0,
         event.errorCategory ? scrubSensitiveStrings(event.errorCategory).slice(0, 64) : null,
@@ -402,13 +318,13 @@ export class OwnerDatabase {
       .run(crypto.randomUUID(), platform, channel, appVersion, architecture, countryCode ?? null, new Date().toISOString());
   }
 
-  public recordAccountRegistration(anonymousUserHash: string, platform: string, planTier = 'free'): void {
+  public recordAccountRegistration(anonymousUserHash: string, platform: string): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
-        'INSERT OR IGNORE INTO account_lifecycle (anonymous_user_hash, platform, plan_tier, registered_at, last_active_at) VALUES (?, ?, ?, ?, ?)',
+        "INSERT OR IGNORE INTO account_lifecycle (anonymous_user_hash, platform, plan_tier, registered_at, last_active_at) VALUES (?, ?, 'free', ?, ?)",
       )
-      .run(anonymousUserHash, platform, planTier, now, now);
+      .run(anonymousUserHash, platform, now, now);
   }
 
   public recordAccountDeletion(anonymousUserHash: string): void {
@@ -453,54 +369,6 @@ export class OwnerDatabase {
         params.errorCode ?? null,
         new Date().toISOString(),
       );
-  }
-
-  public recordBillingEvent(params: {
-    anonymousUserHash: string;
-    eventType: 'subscription_started' | 'subscription_upgraded' | 'subscription_renewed' | 'subscription_cancelled' | 'refund' | 'payment_failed' | 'trial_converted';
-    planTier: string;
-    billingCycle: 'monthly' | 'annual';
-    amountCents: number;
-    currency?: string;
-    provider: 'stripe' | 'apple_iap' | 'google_play' | 'sandbox';
-    externalEventId?: string;
-    verified?: boolean;
-  }): void {
-    const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `INSERT INTO billing_events (
-          id, anonymous_user_hash, event_type, plan_tier, billing_cycle,
-          amount_cents, currency, provider, external_event_id, verified, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        crypto.randomUUID(),
-        params.anonymousUserHash,
-        params.eventType,
-        params.planTier,
-        params.billingCycle,
-        params.amountCents,
-        params.currency || 'USD',
-        params.provider,
-        params.externalEventId ?? null,
-        params.verified === false ? 0 : 1,
-        now,
-      );
-
-    if (
-      params.eventType === 'subscription_started' ||
-      params.eventType === 'subscription_upgraded' ||
-      params.eventType === 'trial_converted'
-    ) {
-      this.db
-        .prepare('UPDATE account_lifecycle SET plan_tier = ? WHERE anonymous_user_hash = ?')
-        .run(params.planTier, params.anonymousUserHash);
-    } else if (params.eventType === 'subscription_cancelled') {
-      this.db
-        .prepare("UPDATE account_lifecycle SET plan_tier = 'free' WHERE anonymous_user_hash = ?")
-        .run(params.anonymousUserHash);
-    }
   }
 
   public recordCrashReport(params: {

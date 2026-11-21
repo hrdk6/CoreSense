@@ -24,7 +24,7 @@ CoreSense is architected as a modular monorepo powering three genuinely connecte
 │  │  - Customer JWT Secret         │  │  - Separate Owner JWT Secret  │  │
 │  │  - AI Copilot & Safety Engine  │  │  - TOTP MFA Support           │  │
 │  │  - RAG Manual Indexer (FTS5)   │  │  - Privacy-Scrubbed Telemetry │  │
-│  │  - Delta Sync Engine           │  │  - Billing / AI Cost Ledger   │  │
+│  │  - Delta Sync Engine           │  │  - AI Token & Cost Ledger     │  │
 │  │  - Validated Tool Registry     │  │  - Zero Customer Data Access  │  │
 │  └───────────────┬────────────────┘  └───────────────┬───────────────┘  │
 └──────────────────┼───────────────────────────────────┼──────────────────┘
@@ -55,7 +55,7 @@ CoreSense is architected as a modular monorepo powering three genuinely connecte
    - Shares the exact same customer account, device library, manuals, repair cases, and delta sync protocol as Desktop.
 3. **Dual-Database Privacy Boundary**:
    - Private customer content lives exclusively in `coresense_customer.db` (or separate PostgreSQL database in production).
-   - Product telemetry, AI token/cost ledgers, installer downloads, billing events, and scrubbed crash reports live exclusively in `coresense_owner.db`.
+   - Product telemetry, AI token/cost ledgers, installer downloads, and scrubbed crash reports live exclusively in `coresense_owner.db`.
    - Every telemetry write passes through a strict allowlist privacy scrubber that strips emails, prompt text, photos, file paths, and device notes.
    - The Owner Console has zero SQL access, zero API endpoints, and zero UI views into customer workspaces.
 4. **Structured AI Repair Copilot & Safety Architecture**:
@@ -73,4 +73,3 @@ CoreSense is architected as a modular monorepo powering three genuinely connecte
 - **External Integrations (Ready, Credential-Gated)**:
   - `GEMINI_API_KEY` — Enables live Gemini 4 multimodal vision, structured tool-calling reasoning, and multimodal embeddings.
   - `OPENAI_API_KEY` (optional) — Enables OpenAI or local Ollama (`OPENAI_BASE_URL`) models.
-  - `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` — Enables live Stripe Checkout & verified webhook billing ingestion (sandbox billing flow works locally without keys).

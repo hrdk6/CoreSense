@@ -4,11 +4,14 @@ import {
   DIAGNOSTIC_TOOL_REGISTRY,
   type DiagnosticResult,
   type EvidenceItem,
-  type ExpertiseMode,
   type Hypothesis,
+  VALID_TOOL_IDS,
   type VerificationOutcome,
   type VerificationReport,
   evaluateHardwareSafety,
+  getToolDefinition,
+  matchBoardDesignators,
+  matchHardwareErrorCodes,
 } from '@coresense/shared';
 import type { AppConfig } from '../config.js';
 import type { OwnerDatabase } from '../db/ownerDb.js';
@@ -29,7 +32,6 @@ export interface ProposedToolCall {
 
 export interface CopilotTurnInput {
   userMessage: string;
-  expertiseMode: ExpertiseMode;
   deviceProfile?: {
     name: string;
     category: string;
@@ -94,16 +96,11 @@ function estimateCostUsd(provider: string, model: string, inputTokens: number, o
 }
 
 function buildSystemInstruction(
-  expertiseMode: ExpertiseMode,
   deviceProfile: CopilotTurnInput['deviceProfile'],
   citations: RetrievedCitation[],
 ): string {
-  const audienceGuide =
-    expertiseMode === 'technician'
-      ? 'User Expertise: INDEPENDENT TECHNICIAN. Provide deep technical diagnostics, rail/bus-level considerations, exact error code meanings, structured differential tests, and clear separation between visual inspection, suspected damage, and confirmed electrical faults.'
-      : expertiseMode === 'enthusiast'
-        ? 'User Expertise: REPAIR ENTHUSIAST. Provide clear technical reasoning, actionable safe diagnostics, process/SMART/network interpretation, and step-by-step verification.'
-        : 'User Expertise: EVERYDAY DEVICE OWNER. Use accessible, plain language without unnecessary jargon. Avoid jumping to OS reinstalls or hardware replacement without evidence. Prioritize safe checks first.';
+  const communicationGuide =
+    'Communication Style: Explain clearly in plain, direct language AND include every relevant technical detail (exact error codes, rail/SMART/process telemetry, and concrete discriminating tests) up front — never hide useful technical evidence behind role levels.';
 
   const deviceLine = deviceProfile
     ? `Target Device: ${deviceProfile.name} (${deviceProfile.category}, ${deviceProfile.manufacturer} ${deviceProfile.model}, OS: ${deviceProfile.osName || 'Unknown'} ${deviceProfile.osVersion || ''}).`
@@ -120,8 +117,8 @@ function buildSystemInstruction(
       : '';
 
   return [
-    'You are CoreSense, a commercial AI electronics diagnostics and repair intelligence copilot ("Understand what\'s happening beneath the surface.").',
-    audienceGuide,
+    'You are CoreSense, an AI electronics diagnostics and repair intelligence copilot ("Understand what\'s happening beneath the surface.").',
+    communicationGuide,
     deviceLine,
     'NON-NEGOTIABLE DIAGNOSTIC STANDARDS:',
     '1. Distinguish User Symptoms, Measured Diagnostics, User Measurements, Visual Observations, Manual Citations, Confirmed Findings, and Uncertainty.',
@@ -272,13 +269,133 @@ function extractDiagnosticInsights(input: CopilotTurnInput): {
         supportingEvidence: [`User submitted board/component image (${meta.width ?? '?'}x${meta.height ?? '?'}px) asking for component inspection.`],
         conflictingEvidence: ['A photograph alone can show visual symptoms (scorch marks, corrosion, cracked casing) but CANNOT confirm an internal electrical short or open circuit.'],
         discriminatingTest:
-          input.expertiseMode === 'technician'
-            ? 'With power & battery disconnected, inspect under magnification, identify the silkscreen designator and IC part marking, then perform resistance-to-ground / diode-mode measurements across adjacent decoupling capacitors and power rail inductors.'
-            : 'Identify the exact device model and inspect if there is any burnt smell, loose port wiggle, or liquid residue — avoid touching exposed power rails and consult a board-level technician if physical damage is visible.',
+          'With power & battery disconnected, inspect under magnification for burnt marks, corrosion, or lifted pads, read the silkscreen designator/IC marking, and verify resistance-to-ground / diode-mode readings across adjacent decoupling capacitors and inductors (or hand off to a board-level shop if you do not have a multimeter).',
         strengthenCriteria: 'Matching visual burn/corrosion plus abnormal low resistance to ground (<5 Ω on a non-core rail) or open continuity on the suspected line.',
         weakenCriteria: 'Visual blemish is superficial flux residue and electrical rail measurements match nominal schematic values.',
         status: 'active',
       });
+    }
+  }
+
+  // 3.5 Decode exact hardware error codes (BSOD/Event IDs), PCB silkscreen designators, and USB-C PD readings
+  const matchedCodes = matchHardwareErrorCodes(input.userMessage);
+  for (const ec of matchedCodes) {
+    newEvidence.push({
+      id: crypto.randomUUID(),
+      kind: 'confirmed_finding',
+      measurementType: 'inferred',
+      title: `Decoded Stop / Event Code: ${ec.title}`,
+      summary: `${ec.plainExplanation} Technical details: ${ec.technicianExplanation}`,
+      source: 'CoreSense Verified Hardware Reference',
+      collectedAt: now,
+    });
+    narrative.push(
+      `**Decoded Error Reference — ${ec.title}:**\n${ec.plainExplanation}\n- **Technical detail:** ${ec.technicianExplanation}\n**Recommended First Checks:**\n${ec.firstChecks.map((c) => `- ${c}`).join('\n')}`,
+    );
+  }
+
+  const matchedParts = matchBoardDesignators(input.userMessage);
+  if (matchedParts.length > 0) {
+    const partLines = matchedParts.map(({ token, ref }) => {
+      newEvidence.push({
+        id: crypto.randomUUID(),
+        kind: 'confirmed_finding',
+        measurementType: 'inferred',
+        title: `Board Designator Reference: ${token} (${ref.componentType})`,
+        summary: `${ref.role} Common faults: ${ref.commonFailureModes}`,
+        source: 'CoreSense PCB Designator Reference',
+        collectedAt: now,
+      });
+      return (
+        `- **${token} — ${ref.componentType}**\n` +
+        `  - **Function:** ${ref.role}\n` +
+        `  - **Typical Failure Modes:** ${ref.commonFailureModes}\n` +
+        `  - **Diagnostic Verification:** ${ref.safeTestMethod}`
+      );
+    });
+    narrative.push(
+      `**Board Silkscreen Component Reference:**\n${partLines.join('\n')}\n` +
+        `_Note: Silkscreen prefixes identify component class, not exact part values. Always confirm exact ratings against the board schematic or boardview before replacement._`,
+    );
+  }
+
+  // USB-C PD meter reading decoder (e.g., "5V 0.00A", "5V 0.04A", "20V 2.1A")
+  const pdMatch = input.userMessage.match(/\b(5|9|12|15|20|28)\s*v(?:\s*[@,]?\s*(\d+(?:\.\d+)?)\s*(?:a|ma))?/i);
+  if (pdMatch && /\b(usb-?c|pd|charger|charging|meter|rail|draw|amp|watt)\b/i.test(text)) {
+    const volts = Number(pdMatch[1]);
+    const currentRaw = pdMatch[2] ? Number(pdMatch[2]) : null;
+    if (volts === 5 && currentRaw !== null && currentRaw <= 0.1) {
+      newEvidence.push({
+        id: crypto.randomUUID(),
+        kind: 'user_measurement',
+        measurementType: 'user_reported',
+        title: `USB-C PD Telemetry: ${volts}V @ ${currentRaw}A`,
+        summary: 'Charger stayed at 5V baseline with near-zero current — USB-PD contract negotiation to 15V/20V did not occur.',
+        source: 'User Inline USB-C Power Meter',
+        collectedAt: now,
+      });
+      hypotheses.push({
+        id: crypto.randomUUID(),
+        title: 'USB-C PD Negotiation Failure (CC Line, Port Pin, or PD Controller IC)',
+        category: 'power_charging',
+        whyPossible: 'USB-C chargers default to 5V until the device PD controller negotiates 15V/20V over CC1/CC2 pins. Zero/low draw at 5V points to a damaged CC pin, stuck EC/BIOS latch, blown input protection MOSFET, or dead PD controller (e.g. CD3217/TPS6598x).',
+        supportingEvidence: [`User measured ${volts}V @ ${currentRaw}A (no 20V PD step-up).`],
+        conflictingEvidence: [],
+        discriminatingTest:
+          'Flip the USB-C plug 180° (checks CC1 vs CC2 separately), test another port with a known-good E-marked charger, perform a 20s EC/hard reset, and (if using a multimeter/USB meter) check CC1/CC2 and VBUS_IN diode-mode readings.',
+        strengthenCriteria: 'One orientation negotiates 20V while the flipped orientation stays at 5V (confirms port/CC pin issue), or all ports remain stuck at 5V 0.00A (confirms PD controller/input rail fault).',
+        weakenCriteria: 'Device negotiates 20V normally on a different known-good E-marked cable/charger.',
+        status: 'strengthened',
+      });
+    }
+  }
+
+  // 3.6 Adaptive Multi-Turn Follow-Up Hypothesis Evolution
+  if (input.existingHypotheses.length > 0 && input.attachedSnapshots.length === 0) {
+    const hasMobileWifi = input.existingHypotheses.some((h) => h.category.startsWith('mobile_network'));
+    if (hasMobileWifi) {
+      const hardwareSignals = /\b(grayed out|greyed out|won't turn on|turns back off|bluetooth.{0,20}(dead|broken|stopped|not working)|dropped|fell|mac.{0,15}(n\/a|02:00))\b/i.test(latestMsg);
+      const softwareSignals = /\b(toggle works|turns on|sees networks|hotspot works|bluetooth works|other wifi works|after update)\b/i.test(latestMsg);
+      if (hardwareSignals) {
+        requiresPro = true;
+        for (const prev of input.existingHypotheses) {
+          if (prev.category === 'mobile_network_hardware') {
+            hypotheses.push({
+              ...prev,
+              status: 'strengthened',
+              supportingEvidence: [...prev.supportingEvidence, `Follow-up report: "${input.userMessage.slice(0, 140)}"`],
+            });
+          } else if (prev.category === 'mobile_network_software') {
+            hypotheses.push({
+              ...prev,
+              status: 'weakened',
+              conflictingEvidence: [...prev.conflictingEvidence, 'Grayed-out toggle / simultaneous Bluetooth loss or impact history strongly points past OS settings.'],
+            });
+          }
+        }
+        narrative.push(
+          'Your follow-up observation significantly shifts the diagnosis: a grayed-out Wi-Fi toggle (especially paired with Bluetooth failure or drop impact) strongly aligns with a faulted Wi-Fi/BT module, loosened coax antenna, or fractured BGA solder joint rather than a router setting.\n\n**Recommended Next Step:** Back up your phone immediately, perform one safe Network Settings Reset only if not already tried, and schedule a bench hardware inspection — avoid factory-resetting blindly if the phone requires Wi-Fi activation on setup.',
+        );
+      } else if (softwareSignals) {
+        for (const prev of input.existingHypotheses) {
+          if (prev.category === 'mobile_network_software') {
+            hypotheses.push({
+              ...prev,
+              status: 'strengthened',
+              supportingEvidence: [...prev.supportingEvidence, `Follow-up report: "${input.userMessage.slice(0, 140)}"`],
+            });
+          } else if (prev.category === 'mobile_network_hardware') {
+            hypotheses.push({
+              ...prev,
+              status: 'ruled_out',
+              conflictingEvidence: [...prev.conflictingEvidence, 'Active toggle, working Bluetooth, or successful alternate hotspot connection rules out a dead internal Wi-Fi IC.'],
+            });
+          }
+        }
+        narrative.push(
+          'Good news — your follow-up checks **rule out a dead internal Wi-Fi chip**. Since the radio responds or works on another network, focus safely on the software/router layer:\n1. Temporarily disable any VPN, Private DNS, or ad-blocker profile.\n2. Forget the problematic Wi-Fi SSID and reconnect.\n3. Restart the router and check whether 2.4 GHz vs 5 GHz bands behave differently.\n4. Run **Reset Network Settings** (preserves personal photos/apps) and re-test reachability in CoreSense Mobile → Phone Check.',
+        );
+      }
     }
   }
 
@@ -331,7 +448,7 @@ function extractDiagnosticInsights(input: CopilotTurnInput): {
   }
 
   if (hasWarn('SMART_HEALTH_WARNING') || hasWarn('SSD_HIGH_WEAR')) {
-    requiresPro = input.expertiseMode === 'everyday';
+    requiresPro = true;
     hypotheses.push({
       id: crypto.randomUUID(),
       title: 'Imminent SSD / Storage Media Failure (SMART Predictive Alert)',
@@ -586,9 +703,7 @@ function extractDiagnosticInsights(input: CopilotTurnInput): {
           supportingEvidence: ['Battery/charging complaint reported.'],
           conflictingEvidence: ['Battery capacity wear and power draw have not been measured yet.'],
           discriminatingTest:
-            input.expertiseMode === 'technician'
-              ? 'Check USB-C PD negotiation using an inline USB power meter (verify 5V vs 9V/15V/20V handshake and current draw) and inspect battery wear telemetry.'
-              : 'Run the Battery & Power diagnostic check to compare current full capacity against original design capacity.',
+            'Run Battery & Power diagnostics to check design vs full-charge capacity wear %, and check USB-C PD negotiation using an inline USB power meter (verify 5V vs 9V/15V/20V handshake and current draw) if available.',
           strengthenCriteria: 'Battery wear exceeds 30%, or USB meter shows 5V / 0.00A with no PD negotiation across verified chargers.',
           weakenCriteria: 'Battery wear is low (<15%) and normal charging resumes on a verified cable.',
           status: 'active',
@@ -739,14 +854,7 @@ function composeLocalDiagnosticReply(
     }
   }
 
-  const modeBadge =
-    input.expertiseMode === 'technician'
-      ? 'Technician Depth'
-      : input.expertiseMode === 'enthusiast'
-        ? 'Enthusiast Depth'
-        : 'Everyday Guidance';
-
-  parts.push(`### Diagnostic Investigation (${modeBadge})`);
+  parts.push('### Diagnostic Investigation');
 
   // Summarize measured / attached evidence cleanly
   if (input.attachedSnapshots.length > 0) {
@@ -823,7 +931,12 @@ async function callGeminiCopilot(
   systemInstruction: string,
   userPrompt: string,
   imageAttachment: CopilotTurnInput['imageAttachment'],
-): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
+): Promise<{
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+  modelToolCalls: Array<{ toolId: string; parameters: Record<string, unknown> }>;
+}> {
   const ai = new GoogleGenAI({ apiKey });
 
   const inputBlocks: Array<Record<string, unknown>> = [{ type: 'text', text: userPrompt }];
@@ -835,12 +948,42 @@ async function callGeminiCopilot(
     });
   }
 
-  // Use modern @google/genai Interactions API (current SDK standard)
+  const toolDeclarations = DIAGNOSTIC_TOOL_REGISTRY.map((t) => ({
+    type: 'function' as const,
+    name: t.id,
+    description: `${t.name}: ${t.description} (Risk: ${t.riskLevel})`,
+    parameters: {
+      type: 'object',
+      properties: {
+        topProcessCount: { type: 'integer', description: 'Optional top process limit (1-20)' },
+        maxEvents: { type: 'integer', description: 'Optional OS event count limit (1-25)' },
+        testHost: { type: 'string', description: 'Optional hostname for DNS/latency check' },
+      },
+    },
+  }));
+
+  // Use modern @google/genai Interactions API (current SDK standard) with validated tool registry
   const interaction = await ai.interactions.create({
     model,
     system_instruction: systemInstruction,
     input: inputBlocks as unknown as string,
+    tools: toolDeclarations as unknown as undefined,
   });
+
+  const modelToolCalls: Array<{ toolId: string; parameters: Record<string, unknown> }> = [];
+  const steps = (interaction as unknown as {
+    steps?: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }>;
+  }).steps;
+  if (Array.isArray(steps)) {
+    for (const step of steps) {
+      if (step.type === 'function_call' && step.name && VALID_TOOL_IDS.has(step.name)) {
+        modelToolCalls.push({
+          toolId: step.name,
+          parameters: step.arguments || {},
+        });
+      }
+    }
+  }
 
   const text = interaction.output_text || '';
   const usage = (interaction as unknown as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
@@ -848,7 +991,94 @@ async function callGeminiCopilot(
     text,
     inputTokens: usage?.input_tokens ?? estimateTokenCount(systemInstruction + userPrompt),
     outputTokens: usage?.output_tokens ?? estimateTokenCount(text),
+    modelToolCalls,
   };
+}
+
+export async function testAiProviderConnection(params: {
+  provider: 'gemini' | 'openai' | 'ollama' | 'coresense-local';
+  apiKey?: string;
+  baseUrl?: string | null;
+  model?: string | null;
+  config: AppConfig;
+}): Promise<{ ok: boolean; provider: string; model: string; latencyMs: number; message: string }> {
+  const started = Date.now();
+  if (params.provider === 'coresense-local') {
+    return {
+      ok: true,
+      provider: 'coresense-local',
+      model: 'coresense-diagnostic-engine-v1',
+      latencyMs: Date.now() - started,
+      message: 'CoreSense Local Diagnostic Engine is active and ready offline.',
+    };
+  }
+  if (params.provider === 'gemini') {
+    const key = params.apiKey || params.config.geminiApiKey;
+    const model = params.model || params.config.geminiModel;
+    if (!key) {
+      return { ok: false, provider: 'gemini', model, latencyMs: 0, message: 'No Gemini API key configured.' };
+    }
+    try {
+      const ai = new GoogleGenAI({ apiKey: key });
+      const res = await ai.interactions.create({ model, input: 'Reply with OK.' });
+      return {
+        ok: Boolean(res.output_text),
+        provider: 'gemini',
+        model,
+        latencyMs: Date.now() - started,
+        message: `Connected to Gemini (${model}) successfully.`,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        provider: 'gemini',
+        model,
+        latencyMs: Date.now() - started,
+        message: err instanceof Error ? err.message : 'Gemini connection failed.',
+      };
+    }
+  }
+  const baseUrl = (params.baseUrl || (params.provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : params.config.openaiBaseUrl)).replace(/\/$/, '');
+  const model = params.model || (params.provider === 'ollama' ? 'llama3.2' : params.config.openaiModel);
+  const key = params.apiKey || (params.provider === 'openai' ? params.config.openaiApiKey : '');
+  try {
+    const resp = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(key ? { Authorization: `Bearer ${key}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        max_tokens: 8,
+      }),
+    });
+    if (!resp.ok) {
+      return {
+        ok: false,
+        provider: params.provider,
+        model,
+        latencyMs: Date.now() - started,
+        message: `Provider returned HTTP ${resp.status} from ${baseUrl}.`,
+      };
+    }
+    return {
+      ok: true,
+      provider: params.provider,
+      model,
+      latencyMs: Date.now() - started,
+      message: `Connected to ${params.provider} (${model}) at ${baseUrl}.`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      provider: params.provider,
+      model,
+      latencyMs: Date.now() - started,
+      message: err instanceof Error ? err.message : 'Provider unreachable.',
+    };
+  }
 }
 
 async function callOpenAiCompatibleCopilot(
@@ -901,7 +1131,7 @@ async function callOpenAiCompatibleCopilot(
 // ============================================================================
 export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTurnOutput> {
   const started = Date.now();
-  const safety = evaluateHardwareSafety(input.userMessage, input.expertiseMode);
+  const safety = evaluateHardwareSafety(input.userMessage);
   const insights = extractDiagnosticInsights(input);
 
   // Merge updated hypotheses with existing investigation hypotheses (deduplicating by title)
@@ -952,13 +1182,19 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
   let baseUrl = '';
 
   if (input.externalAiConsent) {
-    if (input.byokConfig?.apiKey) {
+    if (input.byokConfig && (input.byokConfig.apiKey || input.byokConfig.provider === 'ollama')) {
       provider = input.byokConfig.provider;
       apiKey = input.byokConfig.apiKey;
-      baseUrl = input.byokConfig.baseUrl || input.config.openaiBaseUrl;
+      baseUrl =
+        input.byokConfig.baseUrl ||
+        (provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : input.config.openaiBaseUrl);
       model =
         input.byokConfig.model ||
-        (provider === 'gemini' ? input.config.geminiModel : input.config.openaiModel);
+        (provider === 'gemini'
+          ? input.config.geminiModel
+          : provider === 'ollama'
+            ? 'llama3.2'
+            : input.config.openaiModel);
     } else if (input.config.geminiApiKey) {
       provider = 'gemini';
       apiKey = input.config.geminiApiKey;
@@ -977,7 +1213,6 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
 
   if (provider === 'gemini' || provider === 'openai' || provider === 'ollama') {
     const systemInstruction = buildSystemInstruction(
-      input.expertiseMode,
       input.deviceProfile,
       input.retrievedCitations,
     );
@@ -997,20 +1232,44 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
       .join('\n\n');
 
     try {
-      const res =
-        provider === 'gemini'
-          ? await callGeminiCopilot(apiKey, model, systemInstruction, contextDigest, input.imageAttachment)
-          : await callOpenAiCompatibleCopilot(
-              apiKey,
-              baseUrl,
-              model,
-              systemInstruction,
-              contextDigest,
-              input.imageAttachment,
-            );
-      assistantReply = res.text.trim();
-      inputTokens = res.inputTokens;
-      outputTokens = res.outputTokens;
+      if (provider === 'gemini') {
+        const res = await callGeminiCopilot(apiKey, model, systemInstruction, contextDigest, input.imageAttachment);
+        assistantReply =
+          res.text.trim() ||
+          'Requested validated diagnostic tool execution below to gather direct measurements before finalizing root cause.';
+        inputTokens = res.inputTokens;
+        outputTokens = res.outputTokens;
+        for (const call of res.modelToolCalls) {
+          if (!insights.proposedTools.some((t) => t.toolId === call.toolId)) {
+            const def = getToolDefinition(call.toolId);
+            if (def) {
+              insights.proposedTools.push({
+                id: crypto.randomUUID(),
+                toolId: def.id,
+                toolName: def.name,
+                reason: 'Requested by Gemini 4 Repair Copilot to verify hardware/OS telemetry.',
+                riskLevel: def.riskLevel,
+                requiresExplicitApproval: def.requiresExplicitApproval,
+                approvalWarning: def.approvalWarning,
+                parameters: call.parameters,
+                status: 'proposed',
+              });
+            }
+          }
+        }
+      } else {
+        const res = await callOpenAiCompatibleCopilot(
+          apiKey,
+          baseUrl,
+          model,
+          systemInstruction,
+          contextDigest,
+          input.imageAttachment,
+        );
+        assistantReply = res.text.trim();
+        inputTokens = res.inputTokens;
+        outputTokens = res.outputTokens;
+      }
 
       input.ownerDb.recordAiUsage({
         anonymousUserHash: input.anonymousUserHash,

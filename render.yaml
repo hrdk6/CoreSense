@@ -1,0 +1,55 @@
+# Render Blueprint — CoreSense v1.0 Managed Container Deployment
+services:
+  - type: web
+    name: coresense-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /api/v1/health
+    disk:
+      name: coresense-data
+      mountPath: /app/data
+      sizeGB: 10
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "4000"
+      - key: DATA_DIR
+        value: /app/data
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OWNER_JWT_SECRET
+        generateValue: true
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: OWNER_INITIAL_EMAIL
+        sync: false
+      - key: OWNER_INITIAL_PASSWORD
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: coresense-mobile-pwa
+    runtime: static
+    buildCommand: npm ci && npm --workspace @coresense/shared run build && npm --workspace @coresense/mobile run build
+    staticPublishPath: apps/mobile/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+
+  - type: web
+    name: coresense-owner-console
+    runtime: static
+    buildCommand: npm ci && npm --workspace @coresense/shared run build && npm --workspace @coresense/owner-console run build
+    staticPublishPath: apps/owner-console/dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false

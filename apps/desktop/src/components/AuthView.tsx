@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { KeyRound, Moon, ShieldCheck, Sun } from 'lucide-react';
-import type { ExpertiseMode } from '@coresense/shared';
 import { apiRequest, detectClientPlatform, getInstallId, setAuthToken } from '../api';
 import { BrandLogo } from './BrandLogo';
 
@@ -10,11 +9,12 @@ interface AuthViewProps {
   onToggleTheme: () => void;
 }
 
-const SCOPE_PROFILES: Record<
-  ExpertiseMode,
+type ScopeChannel = 'thermal' | 'storage' | 'power';
+
+const SCOPE_CHANNELS: Record<
+  ScopeChannel,
   {
     label: string;
-    shortDesc: string;
     channelLabel: string;
     primaryReadout: string;
     secondaryReadout: string;
@@ -25,10 +25,9 @@ const SCOPE_PROFILES: Record<
     probeY: number;
   }
 > = {
-  everyday: {
-    label: 'Everyday owner',
-    shortDesc: 'Plain-language findings and safe guided checks.',
-    channelLabel: 'CH1 Thermal stability',
+  thermal: {
+    label: 'Thermal',
+    channelLabel: 'CH1 CPU Die · CH2 Fan RPM',
     primaryReadout: '64.2 °C',
     secondaryReadout: 'Fan nominal · 2,410 RPM',
     statusLabel: 'Within safe thermal window',
@@ -37,10 +36,9 @@ const SCOPE_PROFILES: Record<
     probeX: 350,
     probeY: 44,
   },
-  enthusiast: {
-    label: 'Repair enthusiast',
-    shortDesc: 'Live OS telemetry, SMART health, and manual lookup.',
-    channelLabel: 'CH1+2 NVMe I/O & CPU load',
+  storage: {
+    label: 'Storage SMART',
+    channelLabel: 'CH1+2 NVMe I/O & SMART Wear',
     primaryReadout: '14% wear',
     secondaryReadout: '0 media errors · 38% load',
     statusLabel: 'SMART baseline verified',
@@ -49,9 +47,8 @@ const SCOPE_PROFILES: Record<
     probeX: 328,
     probeY: 24,
   },
-  technician: {
-    label: 'Technician',
-    shortDesc: 'Power rails, error codes, schematics, and bench logs.',
+  power: {
+    label: 'Power Rails',
     channelLabel: 'CH1 PPBUS_G3H · CH2 USB-C PD',
     primaryReadout: '12.56 V',
     secondaryReadout: '20.04 V @ 2.14 A · 42.9 W',
@@ -68,7 +65,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [expertiseMode, setExpertiseMode] = useState<ExpertiseMode>('everyday');
+  const [scopeChannel, setScopeChannel] = useState<ScopeChannel>('thermal');
   const [telemetryOptIn, setTelemetryOptIn] = useState(true);
   const [externalAiConsent, setExternalAiConsent] = useState(true);
   const [recoveryCode, setRecoveryCode] = useState('');
@@ -78,7 +75,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  const activeScope = SCOPE_PROFILES[expertiseMode];
+  const activeScope = SCOPE_CHANNELS[scopeChannel];
   const modeIndex = mode === 'login' ? 0 : mode === 'register' ? 1 : 2;
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -108,7 +105,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
             email,
             password,
             displayName: displayName || email.split('@')[0],
-            expertiseMode,
             telemetryOptIn,
             externalAiConsent,
             platform: detectClientPlatform(),
@@ -157,11 +153,11 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
           <button
             type="button"
             onClick={onToggleTheme}
-            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to OLED black theme'}
             className="cs-btn-secondary flex items-center gap-2 px-3 py-1.5 text-xs cursor-pointer"
           >
             {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-            <span>{theme === 'dark' ? 'Light chassis' : 'Dark graphite'}</span>
+            <span>{theme === 'dark' ? 'Light mode' : 'OLED black'}</span>
           </button>
         </div>
 
@@ -177,25 +173,25 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
             </p>
           </div>
 
-          {/* Interactive Instrument Oscilloscope Monitor */}
+          {/* Interactive Instrument Oscilloscope Monitor (True OLED Black Viewport) */}
           <div
-            className="rounded-xl bg-[#111824] border border-[#2a3444] overflow-hidden cs-animate-hero"
+            className="rounded-xl bg-[#000000] border border-[#22262c] overflow-hidden cs-animate-hero"
             style={{ animationDelay: '140ms' }}
           >
             {/* Scope Header Strip */}
-            <div className="px-4 py-2.5 border-b border-[#232d3d] flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="px-4 py-2.5 border-b border-[#1b1e23] bg-[#060708] flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2.5">
                 <span className="relative flex h-2 w-2">
-                  <span className="cs-animate-probe-ring absolute inline-flex h-full w-full rounded-full bg-[#14B8A6]" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#14B8A6]" />
+                  <span className="cs-animate-probe-ring absolute inline-flex h-full w-full rounded-full bg-[#5EC6A8]" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-[#5EC6A8]" />
                 </span>
-                <span className="font-mono text-[11px] text-[#cbd5e1]">{activeScope.channelLabel}</span>
+                <span className="font-mono text-[11px] text-[#c2cac6]">{activeScope.channelLabel}</span>
               </div>
-              <span className="font-mono text-[11px] text-[#5eead4]">{activeScope.statusLabel}</span>
+              <span className="font-mono text-[11px] text-[#9de2ce]">{activeScope.statusLabel}</span>
             </div>
 
             {/* Scope Waveform Canvas */}
-            <div className="relative px-4 pt-4 pb-3 bg-[#0d131d]">
+            <div className="relative px-4 pt-4 pb-3 bg-[#000000]">
               <svg
                 viewBox="0 0 460 112"
                 className="w-full h-28 overflow-visible"
@@ -204,17 +200,17 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
               >
                 {/* Calibrated horizontal & vertical graticule lines */}
                 {[22, 44, 66, 88].map((y) => (
-                  <line key={y} x1="0" y1={y} x2="460" y2={y} stroke="#1e293b" strokeWidth="1" />
+                  <line key={y} x1="0" y1={y} x2="460" y2={y} stroke="#16191d" strokeWidth="1" />
                 ))}
                 {[92, 184, 276, 368].map((x) => (
-                  <line key={x} x1={x} y1="0" x2={x} y2="112" stroke="#1e293b" strokeWidth="1" strokeDasharray="3 4" />
+                  <line key={x} x1={x} y1="0" x2={x} y2="112" stroke="#16191d" strokeWidth="1" strokeDasharray="3 4" />
                 ))}
 
                 {/* Static persistence reference under-trace */}
                 <path
                   d={activeScope.tracePrimary}
                   fill="none"
-                  stroke="#3B82F6"
+                  stroke="#7BA7F7"
                   strokeWidth="2.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -223,23 +219,23 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
 
                 {/* Secondary reference rail */}
                 <path
-                  key={`sec-${expertiseMode}`}
+                  key={`sec-${scopeChannel}`}
                   d={activeScope.traceSecondary}
                   fill="none"
-                  stroke="#14B8A6"
+                  stroke="#5EC6A8"
                   strokeWidth="1.75"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  opacity="0.75"
+                  opacity="0.78"
                   className="cs-animate-trace"
                 />
 
                 {/* Primary diagnostic channel trace */}
                 <path
-                  key={`pri-${expertiseMode}`}
+                  key={`pri-${scopeChannel}`}
                   d={activeScope.tracePrimary}
                   fill="none"
-                  stroke="#3B82F6"
+                  stroke="#7BA7F7"
                   strokeWidth="2.5"
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -252,7 +248,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
                   y1="4"
                   x2={activeScope.probeX}
                   y2="108"
-                  stroke="#475569"
+                  stroke="#363c45"
                   strokeWidth="1"
                   strokeDasharray="2 3"
                 />
@@ -260,48 +256,48 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
                   cx={activeScope.probeX}
                   cy={activeScope.probeY}
                   r="4.5"
-                  fill="#0d131d"
-                  stroke="#93c5fd"
+                  fill="#000000"
+                  stroke="#b5cffd"
                   strokeWidth="2.2"
                 />
               </svg>
 
               {/* Live Numeric Readout Strip */}
-              <div className="mt-2 pt-2.5 border-t border-[#1e2736] flex flex-wrap items-baseline justify-between gap-2">
+              <div className="mt-2 pt-2.5 border-t border-[#181b1f] flex flex-wrap items-baseline justify-between gap-2">
                 <div className="flex items-baseline gap-3">
-                  <span className="font-mono text-xl font-semibold text-[#f8fafc] cs-tabular">
+                  <span className="font-mono text-xl font-semibold text-[#e8ecea] cs-tabular">
                     {activeScope.primaryReadout}
                   </span>
-                  <span className="font-mono text-xs text-[#94a3b8] cs-tabular">
+                  <span className="font-mono text-xs text-[#8f9995] cs-tabular">
                     {activeScope.secondaryReadout}
                   </span>
                 </div>
-                <span className="text-[11px] text-[#94a3b8]">Interactive depth preview</span>
+                <span className="text-[11px] text-[#707b77]">Interactive signal preview</span>
               </div>
             </div>
 
-            {/* Tactile Scope Mode Selector */}
-            <div className="grid grid-cols-3 border-t border-[#232d3d] bg-[#141c29]">
-              {(['everyday', 'enthusiast', 'technician'] as ExpertiseMode[]).map((depth) => {
-                const selected = expertiseMode === depth;
+            {/* Tactile Scope Channel Selector */}
+            <div className="grid grid-cols-3 border-t border-[#1b1e23] bg-[#060708]">
+              {(['thermal', 'storage', 'power'] as ScopeChannel[]).map((channel) => {
+                const selected = scopeChannel === channel;
                 return (
                   <button
-                    key={depth}
+                    key={channel}
                     type="button"
-                    onClick={() => setExpertiseMode(depth)}
-                    className={`px-3 py-2.5 text-left transition-colors cursor-pointer border-r last:border-r-0 border-[#232d3d] ${
+                    onClick={() => setScopeChannel(channel)}
+                    className={`px-3 py-2.5 text-left transition-colors cursor-pointer border-r last:border-r-0 border-[#1b1e23] ${
                       selected
-                        ? 'bg-[#1b2942] text-[#f8fafc]'
-                        : 'text-[#8b9bb0] hover:text-[#e2e8f0] hover:bg-[#192232]'
+                        ? 'bg-[#0b1424] text-[#e8ecea]'
+                        : 'text-[#96a19c] hover:text-[#e8ecea] hover:bg-[#0e1013]'
                     }`}
                   >
                     <div className="flex items-center gap-1.5 text-xs font-semibold">
                       <span
                         className={`h-1.5 w-1.5 rounded-full transition-colors ${
-                          selected ? 'bg-[#3B82F6]' : 'bg-[#475569]'
+                          selected ? 'bg-[#7BA7F7]' : 'bg-[#3c434c]'
                         }`}
                       />
-                      <span>{SCOPE_PROFILES[depth].label}</span>
+                      <span>{SCOPE_CHANNELS[channel].label}</span>
                     </div>
                   </button>
                 );
@@ -351,7 +347,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
               {mode === 'login'
                 ? 'Sign in to access your devices, telemetry snapshots, and repair cases.'
                 : mode === 'register'
-                  ? 'Set your technical depth and privacy preferences below. You can change them anytime.'
+                  ? 'Create a free personal workspace with full diagnostics, manuals, and cross-device sync.'
                   : 'Request a 6-digit recovery code for your registered email address.'}
             </p>
           </div>
@@ -467,42 +463,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, theme, onTo
 
             {mode === 'register' && (
               <div className="space-y-4 pt-1 cs-animate-view">
-                <div>
-                  <label className="block text-xs font-medium text-[var(--cs-ink-2)] mb-2">
-                    Technical explanation depth
-                  </label>
-                  <div className="grid grid-cols-1 gap-2">
-                    {(['everyday', 'enthusiast', 'technician'] as ExpertiseMode[]).map((depth) => {
-                      const active = expertiseMode === depth;
-                      const profile = SCOPE_PROFILES[depth];
-                      return (
-                        <button
-                          key={depth}
-                          type="button"
-                          onClick={() => setExpertiseMode(depth)}
-                          className={`text-left px-3.5 py-2.5 rounded-lg border transition-colors cursor-pointer flex items-center justify-between gap-3 ${
-                            active
-                              ? 'border-[var(--cs-accent)] bg-[var(--cs-accent-soft)]'
-                              : 'border-[var(--cs-border)] bg-[var(--cs-canvas)] hover:border-[var(--cs-border-strong)]'
-                          }`}
-                        >
-                          <div>
-                            <div className="text-xs font-semibold text-[var(--cs-ink)]">{profile.label}</div>
-                            <div className="text-[11px] text-[var(--cs-ink-muted)] mt-0.5">{profile.shortDesc}</div>
-                          </div>
-                          <span
-                            className={`h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
-                              active ? 'border-[var(--cs-accent)]' : 'border-[var(--cs-border-strong)]'
-                            }`}
-                          >
-                            {active && <span className="h-2 w-2 rounded-full bg-[var(--cs-accent)]" />}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
                 <div className="space-y-2.5 rounded-lg bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-3.5 text-xs text-[var(--cs-ink-2)]">
                   <label className="flex items-start gap-2.5 cursor-pointer">
                     <input

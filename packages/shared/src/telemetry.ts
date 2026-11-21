@@ -10,7 +10,6 @@ import { PlatformSchema } from './types.js';
 export const ALLOWED_PRODUCT_EVENTS = [
   'app_launched',
   'onboarding_completed',
-  'expertise_mode_changed',
   'device_added',
   'investigation_started',
   'investigation_message_sent',
@@ -23,9 +22,6 @@ export const ALLOWED_PRODUCT_EVENTS = [
   'diagnostic_report_exported',
   'sync_completed',
   'sync_failed',
-  'subscription_viewed',
-  'subscription_upgraded',
-  'subscription_cancelled',
   'account_registered',
   'account_deleted',
   'feedback_submitted',
@@ -36,14 +32,13 @@ export type ProductEventName = (typeof ALLOWED_PRODUCT_EVENTS)[number];
 export const ProductTelemetryEventSchema = z.object({
   eventName: z.enum(ALLOWED_PRODUCT_EVENTS),
   anonymousInstallId: z.string().min(8).max(80),
-  anonymousUserHash: z.string().max(64).optional(), // One-way salted hash for DAU/WAU/MAU retention ONLY
+  anonymousUserHash: z.string().max(64).optional(),
   platform: PlatformSchema,
   appVersion: z.string().max(32),
-  expertiseMode: z.enum(['everyday', 'enthusiast', 'technician']).optional(),
   durationMs: z.number().int().min(0).max(3_600_000).optional(),
   success: z.boolean().default(true),
   errorCategory: z.string().max(64).optional(),
-  countryCode: z.string().max(4).optional(), // Aggregate geo only if consented
+  countryCode: z.string().max(4).optional(),
   metadata: z
     .record(z.union([z.string().max(64), z.number(), z.boolean()]))
     .optional(),
@@ -51,7 +46,6 @@ export const ProductTelemetryEventSchema = z.object({
 
 export type ProductTelemetryEvent = z.infer<typeof ProductTelemetryEventSchema>;
 
-// Keys strictly forbidden inside telemetry metadata
 const FORBIDDEN_TELEMETRY_KEYS = new Set([
   'email',
   'name',
@@ -99,7 +93,6 @@ export function scrubTelemetryMetadata(
     if (typeof v === 'number' || typeof v === 'boolean') {
       clean[k] = v;
     } else if (typeof v === 'string') {
-      // Scrub anything resembling an email, file path, or API key
       const scrubbed = scrubSensitiveStrings(v).slice(0, 64);
       clean[k] = scrubbed;
     }

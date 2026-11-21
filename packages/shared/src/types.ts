@@ -6,9 +6,6 @@ import { z } from 'zod';
 export const CORESENSE_VERSION = '1.0.0';
 export const CORESENSE_TAGLINE = "Understand what's happening beneath the surface.";
 
-export const ExpertiseModeSchema = z.enum(['everyday', 'enthusiast', 'technician']);
-export type ExpertiseMode = z.infer<typeof ExpertiseModeSchema>;
-
 export const PlatformSchema = z.enum(['windows', 'macos', 'linux', 'ios', 'android', 'web']);
 export type Platform = z.infer<typeof PlatformSchema>;
 
@@ -148,7 +145,7 @@ export const DiagnosticResultSchema = z.object({
 export type DiagnosticResult = z.infer<typeof DiagnosticResultSchema>;
 
 // ============================================================================
-// Device, Case & Document Schemas
+// Device & Repair Case Schemas
 // ============================================================================
 export const DeviceCreateSchema = z.object({
   name: z.string().min(1).max(120),
@@ -184,32 +181,6 @@ export const RepairExpenseSchema = z.object({
   vendor: z.string().max(120).optional(),
   notes: z.string().max(500).optional(),
 });
-
-// ============================================================================
-// Subscription & Entitlement Schemas (Dynamic — Never Hardcoded Pricing)
-// ============================================================================
-export const PlanTierSchema = z.enum(['free', 'pro', 'premium']);
-export type PlanTier = z.infer<typeof PlanTierSchema>;
-
-export const PlanConfigSchema = z.object({
-  tier: PlanTierSchema,
-  displayName: z.string(),
-  description: z.string(),
-  monthlyPriceCents: z.number().int().min(0),
-  annualPriceCents: z.number().int().min(0),
-  currency: z.string().default('USD'),
-  limits: z.object({
-    aiMessagesPerMonth: z.number().int(),
-    imageAnalysesPerMonth: z.number().int(),
-    documentUploadsMax: z.number().int(),
-    maxDevices: z.number().int(),
-    cloudSyncEnabled: z.boolean(),
-    advancedDiagnosticExport: z.boolean(),
-    voiceCopilotEnabled: z.boolean(),
-  }),
-  active: z.boolean().default(true),
-});
-export type PlanConfig = z.infer<typeof PlanConfigSchema>;
 
 // ============================================================================
 // Cross-Device Synchronization Schemas

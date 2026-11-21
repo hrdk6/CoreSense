@@ -7,77 +7,78 @@
 }
 
 /* ============================================================================
-   CoreSense Owner Console — Executive Ops Graphite (Zero Gradients)
-   Distinct Calibration Amber + Signal Teal + Telemetry Blue ops language
+   CoreSense Owner Console — True OLED Black (#000000) + Eye-Pleasing Mineral Ops
+   Soft Honey Sand, Calm Sage Mint, Horizon Periwinkle, Muted Coral Rose
+   Zero Gradients
    ============================================================================ */
 :root {
   color-scheme: dark;
-  --oc-chassis: #0e131b;
-  --oc-canvas: #131924;
-  --oc-surface: #1a2230;
-  --oc-well: #0c1017;
-  --oc-border: #283345;
-  --oc-border-strong: #415169;
+  --oc-chassis: #000000;
+  --oc-canvas: #000000;
+  --oc-surface: #0a0b0c;
+  --oc-well: #050606;
+  --oc-border: #22262b;
+  --oc-border-strong: #373d45;
 
-  --oc-ink: #edf2f7;
-  --oc-ink-2: #cbd5e1;
-  --oc-ink-muted: #8b9bb0;
+  --oc-ink: #e8ecea;
+  --oc-ink-2: #b4beba;
+  --oc-ink-muted: #8b9691;
 
-  --oc-brand: #f59e0b;
-  --oc-brand-hover: #fbbf24;
-  --oc-brand-soft: #2e2310;
-  --oc-brand-border: #6b4e16;
-  --oc-brand-ink: #fcd34d;
+  --oc-brand: #e5b567;
+  --oc-brand-hover: #ecc684;
+  --oc-brand-soft: #1b1407;
+  --oc-brand-border: #443111;
+  --oc-brand-ink: #f2d29b;
 
-  --oc-blue: #3b82f6;
-  --oc-blue-soft: #182945;
-  --oc-blue-border: #2c4a7c;
-  --oc-blue-ink: #93c5fd;
+  --oc-blue: #7ba7f7;
+  --oc-blue-soft: #0b1424;
+  --oc-blue-border: #1e3357;
+  --oc-blue-ink: #b5cffd;
 
-  --oc-ok: #14b8a6;
-  --oc-ok-soft: #122d2d;
-  --oc-ok-border: #1e5753;
-  --oc-ok-ink: #5eead4;
+  --oc-ok: #5ec6a8;
+  --oc-ok-soft: #071914;
+  --oc-ok-border: #164035;
+  --oc-ok-ink: #9de2ce;
 
-  --oc-danger: #f43f5e;
-  --oc-danger-soft: #331620;
-  --oc-danger-border: #73253b;
-  --oc-danger-ink: #fda4af;
+  --oc-danger: #e87a88;
+  --oc-danger-soft: #1f0a0e;
+  --oc-danger-border: #4a1a23;
+  --oc-danger-ink: #f5b3bc;
 }
 
 html.light {
   color-scheme: light;
-  --oc-chassis: #e6ebf1;
-  --oc-canvas: #f5f7fa;
+  --oc-chassis: #eceff2;
+  --oc-canvas: #f8f9fa;
   --oc-surface: #ffffff;
-  --oc-well: #dde4ec;
-  --oc-border: #cad4e0;
-  --oc-border-strong: #94a3b8;
+  --oc-well: #e3e7ec;
+  --oc-border: #ced5de;
+  --oc-border-strong: #97a3b3;
 
-  --oc-ink: #111824;
-  --oc-ink-2: #334155;
-  --oc-ink-muted: #55657a;
+  --oc-ink: #131820;
+  --oc-ink-2: #394554;
+  --oc-ink-muted: #5d6a7b;
 
-  --oc-brand: #b45309;
-  --oc-brand-hover: #92400e;
-  --oc-brand-soft: #fdf2df;
-  --oc-brand-border: #e5bd78;
-  --oc-brand-ink: #92400e;
+  --oc-brand: #a66316;
+  --oc-brand-hover: #844d0e;
+  --oc-brand-soft: #fbf2e3;
+  --oc-brand-border: #e5c38b;
+  --oc-brand-ink: #844d0e;
 
-  --oc-blue: #1d4ed8;
-  --oc-blue-soft: #e6eeff;
-  --oc-blue-border: #adc5ff;
-  --oc-blue-ink: #1e3a8a;
+  --oc-blue: #2556b8;
+  --oc-blue-soft: #eaf0fc;
+  --oc-blue-border: #b6cbf5;
+  --oc-blue-ink: #1d428f;
 
-  --oc-ok: #0f766e;
-  --oc-ok-soft: #e2f5f2;
-  --oc-ok-border: #99d5cc;
-  --oc-ok-ink: #115e59;
+  --oc-ok: #157a66;
+  --oc-ok-soft: #e5f5f0;
+  --oc-ok-border: #9ed8c8;
+  --oc-ok-ink: #116252;
 
-  --oc-danger: #be123c;
-  --oc-danger-soft: #fce8ed;
-  --oc-danger-border: #eda1b3;
-  --oc-danger-ink: #9f1239;
+  --oc-danger: #b82d45;
+  --oc-danger-soft: #fbecef;
+  --oc-danger-border: #eab0ba;
+  --oc-danger-ink: #932135;
 }
 
 body {
@@ -126,7 +127,7 @@ body {
 
 .oc-btn-primary {
   background-color: var(--oc-brand);
-  color: #111824;
+  color: #080602;
   border: 1px solid var(--oc-brand);
   border-radius: 8px;
   font-weight: 700;
@@ -156,11 +157,20 @@ html.light .oc-btn-primary {
 
 .oc-btn-secondary:hover:not(:disabled) {
   border-color: var(--oc-border-strong);
+  background-color: #131619;
+}
+
+html.light .oc-btn-secondary:hover:not(:disabled) {
+  background-color: #e3e7ec;
 }
 
 .oc-grid-bg {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M32 0H0V32' fill='none' stroke='%2394a3b8' stroke-opacity='0.11' stroke-width='1'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M32 0H0V32' fill='none' stroke='%23ffffff' stroke-opacity='0.045' stroke-width='1'/%3E%3C/svg%3E");
   background-size: 32px 32px;
+}
+
+html.light .oc-grid-bg {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cpath d='M32 0H0V32' fill='none' stroke='%2394a3b8' stroke-opacity='0.14' stroke-width='1'/%3E%3C/svg%3E");
 }
 
 @keyframes oc-view-in {

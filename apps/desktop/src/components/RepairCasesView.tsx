@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { DollarSign, Plus, Trash2, Wrench } from 'lucide-react';
+import { DollarSign, Download, Plus, Trash2, Wrench } from 'lucide-react';
 import { apiRequest } from '../api';
 
 interface RepairCaseSummary {
@@ -125,6 +125,37 @@ export const RepairCasesView: React.FC<{ devices: Array<{ id: string; name: stri
     setExpAmount('');
     await loadDetail(selectedId);
     await loadCases();
+  };
+
+  const handleExportCaseReport = () => {
+    if (!detail) return;
+    const rc = detail.repairCase;
+    const total = detail.expenses.reduce((s, x) => s + x.amount, 0);
+    const md = [
+      `# CoreSense Personal Repair Case Report`,
+      `**Case:** ${rc.title}`,
+      `**Status:** ${rc.status} | **Priority:** ${rc.priority}`,
+      `**Exported:** ${new Date().toISOString()}`,
+      `\n## Symptom Summary\n${rc.symptomSummary || 'None recorded'}`,
+      `\n## Bench Notes & Measurements`,
+      ...(detail.entries.length
+        ? detail.entries.map(
+            (e) =>
+              `- **${e.title}**${e.measurement_value ? ` (\`${e.measurement_value}\`)` : ''}: ${e.body} _(${new Date(e.created_at).toLocaleString()})_`,
+          )
+        : ['- No bench entries logged.']),
+      `\n## Parts & Repair Expenses (Total: $${total.toFixed(2)})`,
+      ...(detail.expenses.length
+        ? detail.expenses.map((ex) => `- ${ex.item_name} (${ex.category}): $${ex.amount.toFixed(2)} ${ex.currency}`)
+        : ['- No expenses recorded.']),
+    ].join('\n');
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `coresense-case-${rc.id.slice(0, 8)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleDelete = async (id: string) => {
@@ -274,19 +305,29 @@ export const RepairCasesView: React.FC<{ devices: Array<{ id: string; name: stri
                     {detail.repairCase.symptomSummary || 'No initial symptom note recorded'}
                   </p>
                 </div>
-                <select
-                  value={detail.repairCase.status}
-                  onChange={(e) => handleStatusChange(e.target.value)}
-                  aria-label="Case status"
-                  className="cs-input px-3 py-1.5 text-xs font-semibold"
-                >
-                  <option value="open">Open</option>
-                  <option value="investigating">Investigating</option>
-                  <option value="waiting_parts">Waiting for parts</option>
-                  <option value="resolved">Resolved</option>
-                  <option value="referred_pro">Referred to pro</option>
-                  <option value="closed">Closed</option>
-                </select>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleExportCaseReport}
+                    className="cs-btn-secondary flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    <span>Export report</span>
+                  </button>
+                  <select
+                    value={detail.repairCase.status}
+                    onChange={(e) => handleStatusChange(e.target.value)}
+                    aria-label="Case status"
+                    className="cs-input px-3 py-1.5 text-xs font-semibold"
+                  >
+                    <option value="open">Open</option>
+                    <option value="investigating">Investigating</option>
+                    <option value="waiting_parts">Waiting for parts</option>
+                    <option value="resolved">Resolved</option>
+                    <option value="referred_pro">Referred to pro</option>
+                    <option value="closed">Closed</option>
+                  </select>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -9,7 +9,6 @@ import {
   type DiagnosticResult,
   DiagnosticResultSchema,
   type EvidenceItem,
-  ExpertiseModeSchema,
   type Hypothesis,
   PlatformSchema,
   ProductTelemetryEventSchema,
@@ -45,6 +44,7 @@ import { inspectImageBuffer, saveUserAttachment } from '../services/imageInspect
 import {
   type ProposedToolCall,
   runCopilotTurn,
+  testAiProviderConnection,
   verifyInvestigationResolution,
 } from '../services/copilot.js';
 
@@ -53,14 +53,10 @@ interface CustomerUserRow {
   email: string;
   display_name: string;
   password_hash: string;
-  expertise_mode: 'everyday' | 'enthusiast' | 'technician';
   telemetry_opt_in: number;
   geo_opt_in: number;
   cloud_sync_enabled: number;
   external_ai_consent: number;
-  plan_tier: 'free' | 'pro' | 'premium';
-  subscription_status: string;
-  billing_cycle: 'monthly' | 'annual';
   byok_provider: string | null;
   byok_encrypted_key: string | null;
   byok_base_url: string | null;
@@ -85,16 +81,12 @@ function serializeUserProfile(u: CustomerUserRow) {
     id: u.id,
     email: u.email,
     displayName: u.display_name,
-    expertiseMode: u.expertise_mode,
     telemetryOptIn: u.telemetry_opt_in === 1,
     geoOptIn: u.geo_opt_in === 1,
     cloudSyncEnabled: u.cloud_sync_enabled === 1,
     externalAiConsent: u.external_ai_consent === 1,
-    planTier: u.plan_tier,
-    subscriptionStatus: u.subscription_status,
-    billingCycle: u.billing_cycle,
     onboardingCompleted: u.onboarding_completed === 1,
-    byokConfigured: Boolean(u.byok_encrypted_key),
+    byokConfigured: Boolean(u.byok_encrypted_key || u.byok_provider === 'ollama'),
     byokProvider: u.byok_provider,
     byokBaseUrl: u.byok_base_url,
     byokModel: u.byok_model,
@@ -147,7 +139,6 @@ export function registerCustomerRoutes(
       anonymousUserHash: createAnonymousUserHash(user.id, config.jwtSecret),
       platform,
       appVersion,
-      expertiseMode: user.expertise_mode,
       success: true,
       ...extra,
     });
@@ -168,6 +159,33 @@ export function registerCustomerRoutes(
         localDiagnosticEngineActive: true,
       },
       timestamp: new Date().toISOString(),
+    };
+  });
+
+  // Commercial Release & Auto-Update Manifest Endpoint
+  app.get('/api/v1/releases/latest', async () => {
+    const cfgRows = ownerDb.db
+      .prepare('SELECT key, value_json FROM product_config WHERE key IN (?, ?)')
+      .all('latestDesktopVersion', 'latestMobileVersion') as Array<{ key: string; value_json: string }>;
+    const map = new Map(cfgRows.map((r) => [r.key, JSON.parse(r.value_json)]));
+    return {
+      product: 'CoreSense',
+      desktop: {
+        version: String(map.get('latestDesktopVersion') || CORESENSE_VERSION),
+        releaseDate: '2026-11-21',
+        notes: 'CoreSense v1.0.0 — Precision Instrument UI, Native Rust Tauri Diagnostics, Multimodal AI Repair Copilot, FTS5 Technical Manuals RAG, and Desktop↔Mobile Sync.',
+        installers: {
+          windowsNsis: 'CoreSense_1.0.0_x64-setup.exe',
+          windowsMsi: 'CoreSense_1.0.0_x64_en-US.msi',
+          macosDmg: 'CoreSense_1.0.0_universal.dmg',
+          linuxAppImage: 'CoreSense_1.0.0_amd64.AppImage',
+        },
+      },
+      mobile: {
+        version: String(map.get('latestMobileVersion') || CORESENSE_VERSION),
+        androidPackage: 'com.coresense.mobile',
+        iosBundleId: 'com.coresense.mobile',
+      },
     };
   });
 
@@ -251,7 +269,6 @@ export function registerCustomerRoutes(
       email: z.string().email().max(160),
       password: z.string().min(8).max(128),
       displayName: z.string().min(1).max(80),
-      expertiseMode: ExpertiseModeSchema.default('everyday'),
       telemetryOptIn: z.boolean().default(true),
       externalAiConsent: z.boolean().default(true),
       platform: PlatformSchema.default('windows'),
@@ -269,29 +286,25 @@ export function registerCustomerRoutes(
     customerDb.db
       .prepare(
         `INSERT INTO users (
-          id, email, display_name, password_hash, expertise_mode,
-          telemetry_opt_in, external_ai_consent, plan_tier, subscription_status,
-          billing_cycle, onboarding_completed, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'free', 'active', 'monthly', 0, ?, ?)`,
+          id, email, display_name, password_hash,
+          telemetry_opt_in, external_ai_consent, onboarding_completed, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       )
       .run(
         userId,
         email,
         parsed.data.displayName.trim(),
         hashPassword(parsed.data.password),
-        parsed.data.expertiseMode,
         parsed.data.telemetryOptIn ? 1 : 0,
         parsed.data.externalAiConsent ? 1 : 0,
         now,
         now,
       );
 
-    customerDb.recordAudit(userId, 'account_registered', 'user', userId, {
-      expertiseMode: parsed.data.expertiseMode,
-    });
+    customerDb.recordAudit(userId, 'account_registered', 'user', userId, {});
 
     const anonHash = createAnonymousUserHash(userId, config.jwtSecret);
-    ownerDb.recordAccountRegistration(anonHash, parsed.data.platform, 'free');
+    ownerDb.recordAccountRegistration(anonHash, parsed.data.platform);
     if (parsed.data.telemetryOptIn) {
       ownerDb.recordProductEvent({
         eventName: 'account_registered',
@@ -299,7 +312,6 @@ export function registerCustomerRoutes(
         anonymousUserHash: anonHash,
         platform: parsed.data.platform,
         appVersion: String(req.headers['x-coresense-version'] || CORESENSE_VERSION),
-        expertiseMode: parsed.data.expertiseMode,
         success: true,
       });
     }
@@ -403,7 +415,6 @@ export function registerCustomerRoutes(
 
   app.get('/api/v1/account/me', { preHandler: requireCustomerAuth }, async (req) => {
     const user = req.customerUser!;
-    const plan = ownerDb.getPlan(user.plan_tier) ?? ownerDb.getPlans()[0];
     const ym = getCurrentYm();
     const usage = (customerDb.db
       .prepare('SELECT * FROM usage_counters WHERE user_id = ? AND period_ym = ?')
@@ -420,7 +431,6 @@ export function registerCustomerRoutes(
     };
     return {
       user: serializeUserProfile(user),
-      plan,
       usage: {
         periodYm: ym,
         aiMessages: usage.ai_messages,
@@ -430,7 +440,7 @@ export function registerCustomerRoutes(
       },
       aiRuntime: {
         activeMode:
-          user.byok_encrypted_key && user.external_ai_consent
+          (user.byok_encrypted_key || user.byok_provider === 'ollama') && user.external_ai_consent
             ? `BYOK (${user.byok_provider})`
             : config.geminiApiKey && user.external_ai_consent
               ? `CoreSense Cloud Gemini (${config.geminiModel})`
@@ -447,7 +457,6 @@ export function registerCustomerRoutes(
   app.patch('/api/v1/account/settings', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const schema = z.object({
       displayName: z.string().min(1).max(80).optional(),
-      expertiseMode: ExpertiseModeSchema.optional(),
       telemetryOptIn: z.boolean().optional(),
       geoOptIn: z.boolean().optional(),
       cloudSyncEnabled: z.boolean().optional(),
@@ -491,7 +500,6 @@ export function registerCustomerRoutes(
       .prepare(
         `UPDATE users SET
           display_name = ?,
-          expertise_mode = ?,
           telemetry_opt_in = ?,
           geo_opt_in = ?,
           cloud_sync_enabled = ?,
@@ -506,7 +514,6 @@ export function registerCustomerRoutes(
       )
       .run(
         d.displayName ?? user.display_name,
-        d.expertiseMode ?? user.expertise_mode,
         d.telemetryOptIn !== undefined ? (d.telemetryOptIn ? 1 : 0) : user.telemetry_opt_in,
         d.geoOptIn !== undefined ? (d.geoOptIn ? 1 : 0) : user.geo_opt_in,
         d.cloudSyncEnabled !== undefined ? (d.cloudSyncEnabled ? 1 : 0) : user.cloud_sync_enabled,
@@ -521,15 +528,54 @@ export function registerCustomerRoutes(
       );
 
     const updated = customerDb.db.prepare('SELECT * FROM users WHERE id = ?').get(user.id) as unknown as CustomerUserRow;
-    if (d.expertiseMode && d.expertiseMode !== user.expertise_mode) {
-      emitUserTelemetry(updated, 'expertise_mode_changed', req, { expertiseMode: d.expertiseMode });
-    }
     if (d.onboardingCompleted && !user.onboarding_completed) {
       emitUserTelemetry(updated, 'onboarding_completed', req);
     }
     customerDb.recordAudit(user.id, 'account_settings_updated', 'user', user.id);
 
     return { user: serializeUserProfile(updated) };
+  });
+
+  // Live AI Provider Connection Tester (validates BYOK or Server provider without saving)
+  app.post('/api/v1/account/test-ai', { preHandler: requireCustomerAuth }, async (req, reply) => {
+    const schema = z.object({
+      provider: z.enum(['gemini', 'openai', 'ollama', 'coresense-local']).optional(),
+      apiKey: z.string().max(300).optional(),
+      baseUrl: z.string().max(300).optional(),
+      model: z.string().max(120).optional(),
+    });
+    const parsed = schema.safeParse(req.body || {});
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
+
+    const user = req.customerUser!;
+    let provider = parsed.data.provider;
+    let apiKey = parsed.data.apiKey;
+    let baseUrl = parsed.data.baseUrl;
+    let model = parsed.data.model;
+
+    if (!provider) {
+      if (user.byok_provider && (user.byok_encrypted_key || user.byok_provider === 'ollama')) {
+        provider = user.byok_provider as 'gemini' | 'openai' | 'ollama';
+        apiKey = user.byok_encrypted_key ? decryptSecret(user.byok_encrypted_key, config.encryptionKey) : '';
+        baseUrl = user.byok_base_url || undefined;
+        model = user.byok_model || undefined;
+      } else if (config.geminiApiKey) {
+        provider = 'gemini';
+      } else if (config.openaiApiKey) {
+        provider = 'openai';
+      } else {
+        provider = 'coresense-local';
+      }
+    }
+
+    const result = await testAiProviderConnection({
+      provider,
+      apiKey,
+      baseUrl,
+      model,
+      config,
+    });
+    return result;
   });
 
   app.get('/api/v1/account/export', { preHandler: requireCustomerAuth }, async (req) => {
@@ -628,14 +674,6 @@ export function registerCustomerRoutes(
     const parsed = DeviceCreateSchema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
     const user = req.customerUser!;
-    const plan = ownerDb.getPlan(user.plan_tier);
-    const currentCount = (customerDb.db
-      .prepare('SELECT COUNT(*) as c FROM devices WHERE user_id = ? AND deleted_at IS NULL')
-      .get(user.id) as { c: number }).c;
-    if (plan && currentCount >= plan.limits.maxDevices) {
-      return reply.code(403).send({ error: `Device limit (${plan.limits.maxDevices}) reached for ${plan.displayName}.` });
-    }
-
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const d = parsed.data;
@@ -1034,13 +1072,13 @@ export function registerCustomerRoutes(
       limit: 4,
     });
 
-    // Decrypt BYOK key if configured
+    // Decrypt BYOK key if configured (Ollama allowed without key)
     let byokConfig: Parameters<typeof runCopilotTurn>[0]['byokConfig'] = null;
-    if (user.byok_provider && user.byok_encrypted_key) {
+    if (user.byok_provider && (user.byok_encrypted_key || user.byok_provider === 'ollama')) {
       try {
         byokConfig = {
           provider: user.byok_provider,
-          apiKey: decryptSecret(user.byok_encrypted_key, config.encryptionKey),
+          apiKey: user.byok_encrypted_key ? decryptSecret(user.byok_encrypted_key, config.encryptionKey) : '',
           baseUrl: user.byok_base_url,
           model: user.byok_model,
         };
@@ -1051,7 +1089,6 @@ export function registerCustomerRoutes(
 
     const turnOut = await runCopilotTurn({
       userMessage: messageText,
-      expertiseMode: (inv.expertise_mode as CustomerUserRow['expertise_mode']) || user.expertise_mode,
       deviceProfile: deviceRow
         ? {
             name: String(deviceRow.name),
@@ -1184,7 +1221,6 @@ export function registerCustomerRoutes(
         deviceCategory: r.device_category,
         title: r.title,
         initialSymptom: r.initial_symptom,
-        expertiseMode: r.expertise_mode,
         status: r.status,
         verificationOutcome: r.verification_outcome,
         hypothesisCount: (JSON.parse(String(r.hypotheses_json || '[]')) as unknown[]).length,
@@ -1202,7 +1238,6 @@ export function registerCustomerRoutes(
       title: z.string().min(2).max(160).optional(),
       initialSymptom: z.string().min(2).max(4000),
       deviceId: z.string().optional(),
-      expertiseMode: ExpertiseModeSchema.optional(),
       inputModality: z.enum(['text', 'voice', 'image']).default('text'),
       snapshotIds: z.array(z.string()).default([]),
       imageBase64: z.string().optional(),
@@ -1216,18 +1251,17 @@ export function registerCustomerRoutes(
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const title = parsed.data.title || parsed.data.initialSymptom.slice(0, 72);
-    const expertise = parsed.data.expertiseMode || user.expertise_mode;
 
     customerDb.db
       .prepare(
         `INSERT INTO investigations (
-          id, user_id, device_id, title, initial_symptom, expertise_mode,
+          id, user_id, device_id, title, initial_symptom,
           status, revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, 'active', 1, ?, ?)`,
       )
-      .run(id, user.id, parsed.data.deviceId ?? null, title, parsed.data.initialSymptom, expertise, now, now);
+      .run(id, user.id, parsed.data.deviceId ?? null, title, parsed.data.initialSymptom, now, now);
 
-    emitUserTelemetry(user, 'investigation_started', req, { expertiseMode: expertise });
+    emitUserTelemetry(user, 'investigation_started', req);
 
     const turnResult = await executeInvestigationTurn({
       user,
@@ -1246,7 +1280,6 @@ export function registerCustomerRoutes(
         id,
         title,
         deviceId: parsed.data.deviceId ?? null,
-        expertiseMode: expertise,
         status: 'active',
         createdAt: now,
       },
@@ -1271,7 +1304,6 @@ export function registerCustomerRoutes(
         deviceId: inv.device_id,
         title: inv.title,
         initialSymptom: inv.initial_symptom,
-        expertiseMode: inv.expertise_mode,
         status: inv.status,
         verificationOutcome: inv.verification_outcome,
         verificationReport: inv.verification_report_json ? JSON.parse(String(inv.verification_report_json)) : null,
@@ -1493,7 +1525,6 @@ export function registerCustomerRoutes(
       `# CoreSense Diagnostic Investigation Report`,
       `**Investigation:** ${String(inv.title)}`,
       `**Generated:** ${new Date().toISOString()}`,
-      `**Expertise Depth:** ${String(inv.expertise_mode)}`,
       `**Status:** ${String(inv.status)} | **Verification Outcome:** ${String(inv.verification_outcome || 'Not yet verified')}`,
       `\n## Initial Symptom\n${String(inv.initial_symptom)}`,
       `\n## Collected Evidence & Provenance`,
@@ -1562,13 +1593,6 @@ export function registerCustomerRoutes(
 
   app.post('/api/v1/documents', { preHandler: requireCustomerAuth }, async (req, reply) => {
     const user = req.customerUser!;
-    const plan = ownerDb.getPlan(user.plan_tier);
-    const currentDocs = (customerDb.db
-      .prepare('SELECT COUNT(*) as c FROM documents WHERE user_id = ? AND deleted_at IS NULL')
-      .get(user.id) as { c: number }).c;
-    if (plan && currentDocs >= plan.limits.documentUploadsMax) {
-      return reply.code(403).send({ error: `Document limit (${plan.limits.documentUploadsMax}) reached for ${plan.displayName}.` });
-    }
 
     let title = '';
     let filename = 'manual.txt';
@@ -1853,82 +1877,6 @@ export function registerCustomerRoutes(
       .run(now, rc.revision + 1, now, id);
     customerDb.recordSyncChange(req.customerUser!.id, 'repair_case', id, 'delete', rc.revision + 1);
     return { deleted: true };
-  });
-
-  // ==========================================================================
-  // Dynamic Plans, Subscriptions & Billing Events
-  // ==========================================================================
-  app.get('/api/v1/billing/plans', async () => {
-    return {
-      plans: ownerDb.getPlans().filter((p) => p.active),
-      stripeLiveConfigured: Boolean(config.stripeSecretKey),
-    };
-  });
-
-  app.post('/api/v1/billing/subscribe', { preHandler: requireCustomerAuth }, async (req, reply) => {
-    const schema = z.object({
-      planTier: z.enum(['free', 'pro', 'premium']),
-      billingCycle: z.enum(['monthly', 'annual']).default('monthly'),
-      provider: z.enum(['stripe', 'apple_iap', 'google_play', 'sandbox']).default('sandbox'),
-    });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-
-    const user = req.customerUser!;
-    const plan = ownerDb.getPlan(parsed.data.planTier);
-    if (!plan) return reply.code(404).send({ error: 'Selected plan tier is not configured.' });
-
-    const amountCents =
-      parsed.data.billingCycle === 'annual' ? plan.annualPriceCents : plan.monthlyPriceCents;
-    const now = new Date().toISOString();
-    const prevTier = user.plan_tier;
-
-    customerDb.db
-      .prepare('UPDATE users SET plan_tier = ?, billing_cycle = ?, subscription_status = ?, updated_at = ? WHERE id = ?')
-      .run(plan.tier, parsed.data.billingCycle, 'active', now, user.id);
-
-    const anonHash = createAnonymousUserHash(user.id, config.jwtSecret);
-    if (plan.tier === 'free' && prevTier !== 'free') {
-      ownerDb.recordBillingEvent({
-        anonymousUserHash: anonHash,
-        eventType: 'subscription_cancelled',
-        planTier: prevTier,
-        billingCycle: parsed.data.billingCycle,
-        amountCents: 0,
-        currency: plan.currency,
-        provider: parsed.data.provider,
-      });
-      emitUserTelemetry(user, 'subscription_cancelled', req, { metadata: { fromTier: prevTier } });
-    } else if (plan.tier !== 'free') {
-      ownerDb.recordBillingEvent({
-        anonymousUserHash: anonHash,
-        eventType: prevTier === 'free' ? 'subscription_started' : 'subscription_upgraded',
-        planTier: plan.tier,
-        billingCycle: parsed.data.billingCycle,
-        amountCents,
-        currency: plan.currency,
-        provider: parsed.data.provider,
-      });
-      emitUserTelemetry(user, 'subscription_upgraded', req, { metadata: { tier: plan.tier, cycle: parsed.data.billingCycle } });
-    }
-
-    customerDb.recordAudit(user.id, 'subscription_changed', 'subscription', plan.tier, {
-      previousTier: prevTier,
-      billingCycle: parsed.data.billingCycle,
-      provider: parsed.data.provider,
-    });
-
-    return {
-      ok: true,
-      planTier: plan.tier,
-      billingCycle: parsed.data.billingCycle,
-      amountCents,
-      provider: parsed.data.provider,
-      note:
-        parsed.data.provider === 'sandbox' && !config.stripeSecretKey
-          ? 'Processed in local sandbox billing mode. Configure STRIPE_SECRET_KEY / Store IAP receipts for live commercial payment processing.'
-          : 'Subscription updated.',
-    };
   });
 
   // ==========================================================================

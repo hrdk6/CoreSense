@@ -4,6 +4,8 @@ import {
   BookOpen,
   Camera,
   Cloud,
+  Download,
+  Globe,
   Laptop,
   LogOut,
   MessageSquare,
@@ -11,20 +13,22 @@ import {
   Moon,
   Plus,
   RefreshCw,
+  Search,
   Send,
   Sun,
   User,
   Wrench,
   X,
 } from 'lucide-react';
-import type { ExpertiseMode } from '@coresense/shared';
 import {
   detectMobilePlatform,
+  getApiBaseUrl,
   getInstallId,
   getMobileSyncSeq,
   getMobileToken,
   mobileApiRequest,
   reportMobileActivation,
+  setMobileApiBaseUrl,
   setMobileSyncSeq,
   setMobileToken,
 } from './mobileApi';
@@ -35,19 +39,19 @@ const MOBILE_THEME_KEY = 'coresense_mobile_theme';
 
 const MobileMark: React.FC<{ small?: boolean }> = ({ small = false }) => (
   <div
-    className={`flex shrink-0 items-center justify-center bg-[#111824] border border-[#2a3444] ${
+    className={`flex shrink-0 items-center justify-center bg-[#000000] border border-[#262b31] ${
       small ? 'h-8 w-8 rounded-lg' : 'h-11 w-11 rounded-[10px]'
     }`}
   >
     <svg viewBox="0 0 128 128" className={small ? 'h-5 w-5' : 'h-7 w-7'} fill="none" aria-hidden="true">
       <path
         d="M16 68 H42 L53 34 L67 96 L78 52 L87 68 H112"
-        stroke="#3B82F6"
+        stroke="#7BA7F7"
         strokeWidth="9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="112" cy="68" r="6" fill="#14B8A6" />
+      <circle cx="112" cy="68" r="6" fill="#5EC6A8" />
     </svg>
   </div>
 );
@@ -102,15 +106,13 @@ export const App: React.FC = () => {
   const [displayName, setDisplayName] = useState('');
   const [authErr, setAuthErr] = useState<string | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>(() =>
-    localStorage.getItem(MOBILE_THEME_KEY) === 'dark' ? 'dark' : 'light',
+    localStorage.getItem(MOBILE_THEME_KEY) === 'light' ? 'light' : 'dark',
   );
 
   const [tab, setTab] = useState<MobileTab>('copilot');
   const [profile, setProfile] = useState<{
     displayName: string;
     email: string;
-    expertiseMode: ExpertiseMode;
-    planTier: string;
   } | null>(null);
   const [devices, setDevices] = useState<Array<{ id: string; name: string; category: string; model: string }>>([]);
   const [cases, setCases] = useState<Array<{ id: string; title: string; status: string; totalExpense: number }>>([]);
@@ -126,9 +128,20 @@ export const App: React.FC = () => {
   const [photo, setPhoto] = useState<{ base64: string; mimeType: string; filename: string } | null>(null);
   const [sending, setSending] = useState(false);
 
-  // Quick Add Device / Case forms
+  // Quick Add Device / Case / Manual / Mobile standalone forms
+  const [selectedDeviceId, setSelectedDeviceId] = useState('');
   const [newDevName, setNewDevName] = useState('');
   const [newCaseTitle, setNewCaseTitle] = useState('');
+  const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
+  const [caseEntryText, setCaseEntryText] = useState('');
+  const [caseExpenseItem, setCaseExpenseItem] = useState('');
+  const [caseExpenseAmt, setCaseExpenseAmt] = useState('');
+  const [manualQuery, setManualQuery] = useState('');
+  const [manualHits, setManualHits] = useState<Array<{ documentTitle: string; pageNumber: number; sectionHeading: string; excerpt: string }>>([]);
+  const [showAddManual, setShowAddManual] = useState(false);
+  const [newManualTitle, setNewManualTitle] = useState('');
+  const [newManualText, setNewManualText] = useState('');
+  const [mobileServerUrl, setMobileServerUrl] = useState(() => getApiBaseUrl());
 
   const camRef = useRef<HTMLInputElement | null>(null);
 
@@ -204,7 +217,6 @@ export const App: React.FC = () => {
                 email,
                 password,
                 displayName: displayName || email.split('@')[0],
-                expertiseMode: 'everyday',
                 platform: plat,
                 installId: getInstallId(),
               },
@@ -245,6 +257,7 @@ export const App: React.FC = () => {
           method: 'POST',
           body: {
             initialSymptom: prompt,
+            deviceId: selectedDeviceId || undefined,
             inputModality: photo ? 'image' : 'text',
             imageBase64: photo?.base64,
             imageMimeType: photo?.mimeType,
@@ -313,6 +326,68 @@ export const App: React.FC = () => {
     });
     setNewCaseTitle('');
     await loadAll();
+  };
+
+  const handleAddCaseNote = async (caseId: string) => {
+    if (!caseEntryText.trim()) return;
+    await mobileApiRequest(`/api/v1/cases/${caseId}/entries`, {
+      method: 'POST',
+      body: { entryType: 'note', title: 'Mobile Bench Note', body: caseEntryText },
+    });
+    setCaseEntryText('');
+    setSyncMsg('Repair note saved & synced.');
+    await loadAll();
+  };
+
+  const handleAddCaseExpense = async (caseId: string) => {
+    if (!caseExpenseItem.trim() || !caseExpenseAmt) return;
+    await mobileApiRequest(`/api/v1/cases/${caseId}/expenses`, {
+      method: 'POST',
+      body: { itemName: caseExpenseItem, amount: Number(caseExpenseAmt), category: 'part' },
+    });
+    setCaseExpenseItem('');
+    setCaseExpenseAmt('');
+    setSyncMsg('Repair part expense logged & synced.');
+    await loadAll();
+  };
+
+  const handleMobileManualSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (manualQuery.trim().length < 2) return;
+    const res = await mobileApiRequest<{ results: typeof manualHits }>(
+      `/api/v1/documents/search?q=${encodeURIComponent(manualQuery)}`,
+    );
+    setManualHits(res.results);
+  };
+
+  const handleMobileAddManual = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newManualTitle.trim() || !newManualText.trim()) return;
+    await mobileApiRequest('/api/v1/documents', {
+      method: 'POST',
+      body: {
+        title: newManualTitle,
+        filename: `${newManualTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.md`,
+        mimeType: 'text/markdown',
+        contentText: newManualText,
+      },
+    });
+    setNewManualTitle('');
+    setNewManualText('');
+    setShowAddManual(false);
+    setSyncMsg('Service manual indexed and synced.');
+    await loadAll();
+  };
+
+  const handleMobileExport = async () => {
+    const data = await mobileApiRequest<Record<string, unknown>>('/api/v1/account/export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `coresense-mobile-export-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   if (!authed) {
@@ -456,19 +531,35 @@ export const App: React.FC = () => {
 
           {tab === 'copilot' && (
             <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-              <div className="shrink-0 px-4 pt-3.5 pb-2.5 flex items-center justify-between border-b border-[var(--cs-border)] bg-[var(--cs-canvas)]">
-                <h1 className="cs-heading text-base font-bold text-[var(--cs-ink)]">Repair copilot</h1>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setInvId(null);
-                    setMessages([]);
-                    setHypotheses([]);
-                  }}
-                  className="text-xs text-[var(--cs-accent)] font-semibold cursor-pointer"
-                >
-                  + New session
-                </button>
+              <div className="shrink-0 px-4 pt-3 pb-2.5 flex items-center justify-between gap-2 border-b border-[var(--cs-border)] bg-[var(--cs-canvas)]">
+                <h1 className="cs-heading text-base font-bold text-[var(--cs-ink)] shrink-0">Repair copilot</h1>
+                <div className="flex items-center gap-2 min-w-0">
+                  {!invId && devices.length > 0 && (
+                    <select
+                      value={selectedDeviceId}
+                      onChange={(e) => setSelectedDeviceId(e.target.value)}
+                      className="cs-input px-2 py-1 text-[11px] max-w-[120px] truncate"
+                    >
+                      <option value="">Any device</option>
+                      {devices.map((d) => (
+                        <option key={d.id} value={d.id}>
+                          {d.name}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInvId(null);
+                      setMessages([]);
+                      setHypotheses([]);
+                    }}
+                    className="text-xs text-[var(--cs-accent)] font-semibold shrink-0 cursor-pointer"
+                  >
+                    + New
+                  </button>
+                </div>
               </div>
 
               <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
@@ -668,14 +759,66 @@ export const App: React.FC = () => {
                   </button>
                 </form>
                 <div className="space-y-2">
-                  {cases.map((c) => (
-                    <div key={c.id} className="cs-panel p-3 flex justify-between text-xs">
-                      <span className="font-semibold text-[var(--cs-ink)]">{c.title}</span>
-                      <span className="font-mono text-[var(--cs-ok-ink)] cs-tabular">
-                        ${Number(c.totalExpense || 0).toFixed(0)}
-                      </span>
-                    </div>
-                  ))}
+                  {cases.map((c) => {
+                    const expanded = expandedCaseId === c.id;
+                    return (
+                      <div key={c.id} className="cs-panel p-3 space-y-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedCaseId(expanded ? null : c.id)}
+                          className="w-full flex justify-between items-center text-xs text-left cursor-pointer"
+                        >
+                          <span className="font-semibold text-[var(--cs-ink)]">{c.title}</span>
+                          <span className="font-mono text-[var(--cs-ok-ink)] cs-tabular">
+                            ${Number(c.totalExpense || 0).toFixed(2)}
+                          </span>
+                        </button>
+                        {expanded && (
+                          <div className="pt-2 border-t border-[var(--cs-border)] space-y-2">
+                            <div className="flex gap-1.5">
+                              <input
+                                value={caseEntryText}
+                                onChange={(e) => setCaseEntryText(e.target.value)}
+                                placeholder="Log note or multimeter reading..."
+                                className="cs-input flex-1 px-2.5 py-1.5 text-xs"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleAddCaseNote(c.id)}
+                                className="cs-btn-secondary px-2.5 py-1.5 text-[11px] font-semibold cursor-pointer"
+                              >
+                                Save
+                              </button>
+                            </div>
+                            <div className="flex gap-1.5">
+                              <input
+                                value={caseExpenseItem}
+                                onChange={(e) => setCaseExpenseItem(e.target.value)}
+                                placeholder="Part name"
+                                className="cs-input flex-1 px-2.5 py-1.5 text-xs"
+                              />
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.01"
+                                value={caseExpenseAmt}
+                                onChange={(e) => setCaseExpenseAmt(e.target.value)}
+                                placeholder="$"
+                                className="cs-input w-16 px-2 py-1.5 text-xs font-mono"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleAddCaseExpense(c.id)}
+                                className="cs-btn-accent px-2.5 py-1.5 text-[11px] cursor-pointer"
+                              >
+                                +Cost
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -683,15 +826,70 @@ export const App: React.FC = () => {
 
           {tab === 'manuals' && (
             <div className="space-y-3">
-              <h1 className="cs-heading text-base font-bold text-[var(--cs-ink)]">
-                Synced service manuals ({docs.length})
-              </h1>
-              <p className="text-xs text-[var(--cs-ink-muted)] leading-relaxed">
-                Manuals indexed on desktop stay available for citations on your phone.
-              </p>
+              <div className="flex items-center justify-between">
+                <h1 className="cs-heading text-base font-bold text-[var(--cs-ink)]">
+                  Service manuals ({docs.length})
+                </h1>
+                <button
+                  type="button"
+                  onClick={() => setShowAddManual((v) => !v)}
+                  className="text-xs font-semibold text-[var(--cs-accent)] cursor-pointer"
+                >
+                  {showAddManual ? 'Close' : '+ Index notes'}
+                </button>
+              </div>
+
+              {showAddManual && (
+                <form onSubmit={handleMobileAddManual} className="cs-panel p-3 space-y-2">
+                  <input
+                    required
+                    value={newManualTitle}
+                    onChange={(e) => setNewManualTitle(e.target.value)}
+                    placeholder="Manual title (e.g. Pixel 8 Board Pinout)"
+                    className="cs-input w-full px-3 py-2 text-xs"
+                  />
+                  <textarea
+                    required
+                    rows={3}
+                    value={newManualText}
+                    onChange={(e) => setNewManualText(e.target.value)}
+                    placeholder="Paste repair specs, error codes, or schematic notes..."
+                    className="cs-input w-full px-3 py-2 text-xs font-mono"
+                  />
+                  <button type="submit" className="cs-btn-primary w-full py-2 text-xs cursor-pointer">
+                    Index & sync manual
+                  </button>
+                </form>
+              )}
+
+              <form onSubmit={handleMobileManualSearch} className="flex gap-1.5">
+                <input
+                  value={manualQuery}
+                  onChange={(e) => setManualQuery(e.target.value)}
+                  placeholder="Search manuals for error codes or specs..."
+                  className="cs-input flex-1 px-3 py-2 text-xs"
+                />
+                <button type="submit" className="cs-btn-secondary px-3 cursor-pointer" aria-label="Search manuals">
+                  <Search className="h-3.5 w-3.5" />
+                </button>
+              </form>
+
+              {manualHits.length > 0 && (
+                <div className="space-y-2">
+                  {manualHits.map((h, i) => (
+                    <div key={i} className="cs-panel p-3 border-l-[3px] border-l-[var(--cs-accent)] space-y-1">
+                      <div className="text-[11px] font-semibold text-[var(--cs-accent-ink)]">
+                        {h.documentTitle} · p.{h.pageNumber}
+                      </div>
+                      <p className="text-xs text-[var(--cs-ink-2)] line-clamp-3">{h.excerpt}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {docs.length === 0 ? (
                 <div className="cs-panel p-6 text-center text-xs text-[var(--cs-ink-muted)]">
-                  No manuals synced yet.
+                  No manuals indexed yet. Add notes above or upload PDFs on desktop.
                 </div>
               ) : (
                 docs.map((doc) => (
@@ -709,25 +907,67 @@ export const App: React.FC = () => {
           {tab === 'account' && profile && (
             <div className="space-y-3.5">
               <div className="cs-panel p-4 space-y-2">
-                <div className="cs-heading text-sm font-bold text-[var(--cs-ink)]">{profile.displayName}</div>
-                <div className="text-xs text-[var(--cs-ink-muted)]">{profile.email}</div>
-                <div className="flex gap-2 pt-1 text-[11px]">
-                  <span className="rounded bg-[var(--cs-accent-soft)] text-[var(--cs-accent-ink)] px-2 py-0.5 capitalize font-medium">
-                    {profile.expertiseMode} depth
-                  </span>
-                  <span className="rounded bg-[var(--cs-well)] text-[var(--cs-ink-2)] px-2 py-0.5 capitalize font-medium">
-                    {profile.planTier} plan
-                  </span>
+                <div>
+                  <div className="cs-heading text-sm font-bold text-[var(--cs-ink)]">{profile.displayName}</div>
+                  <div className="text-xs text-[var(--cs-ink-muted)]">{profile.email}</div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-[var(--cs-border)]">
+                  <div className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] px-2.5 py-1.5">
+                    <div className="text-[10px] text-[var(--cs-ink-muted)]">Devices</div>
+                    <div className="font-mono text-sm font-bold text-[var(--cs-ink)] cs-tabular">{devices.length}</div>
+                  </div>
+                  <div className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] px-2.5 py-1.5">
+                    <div className="text-[10px] text-[var(--cs-ink-muted)]">Cases</div>
+                    <div className="font-mono text-sm font-bold text-[var(--cs-ink)] cs-tabular">{cases.length}</div>
+                  </div>
+                  <div className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] px-2.5 py-1.5">
+                    <div className="text-[10px] text-[var(--cs-ink-muted)]">Manuals</div>
+                    <div className="font-mono text-sm font-bold text-[var(--cs-ink)] cs-tabular">{docs.length}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="cs-panel p-3.5 space-y-2">
+                <div className="text-xs font-semibold text-[var(--cs-ink)] flex items-center gap-1.5">
+                  <Globe className="h-3.5 w-3.5 text-[var(--cs-accent)]" />
+                  <span>Backend API server</span>
+                </div>
+                <div className="flex gap-1.5">
+                  <input
+                    value={mobileServerUrl}
+                    onChange={(e) => setMobileServerUrl(e.target.value)}
+                    placeholder="https://api.coresense.app"
+                    className="cs-input flex-1 px-2.5 py-1.5 text-[11px] font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileApiBaseUrl(mobileServerUrl);
+                      setSyncMsg(`Server endpoint updated to ${mobileServerUrl}.`);
+                    }}
+                    className="cs-btn-secondary px-3 py-1.5 text-[11px] font-semibold cursor-pointer"
+                  >
+                    Save
+                  </button>
                 </div>
               </div>
 
               <button
                 type="button"
                 onClick={handleSync}
-                className="cs-btn-secondary w-full flex items-center justify-center gap-2 py-3 text-xs font-semibold cursor-pointer"
+                className="cs-btn-secondary w-full flex items-center justify-center gap-2 py-2.5 text-xs font-semibold cursor-pointer"
               >
                 <Cloud className="h-4 w-4 text-[var(--cs-accent)]" />
                 <span>Pull latest desktop sync</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleMobileExport}
+                className="cs-btn-secondary w-full flex items-center justify-center gap-2 py-2.5 text-xs font-semibold cursor-pointer"
+              >
+                <Download className="h-4 w-4 text-[var(--cs-ok)]" />
+                <span>Export personal data (JSON)</span>
               </button>
 
               <button
@@ -736,7 +976,7 @@ export const App: React.FC = () => {
                   setMobileToken(null);
                   setAuthed(false);
                 }}
-                className="w-full flex items-center justify-center gap-2 rounded-lg border border-[var(--cs-danger-border)] bg-[var(--cs-danger-soft)] py-3 text-xs font-semibold text-[var(--cs-danger-ink)] cursor-pointer"
+                className="w-full flex items-center justify-center gap-2 rounded-lg border border-[var(--cs-danger-border)] bg-[var(--cs-danger-soft)] py-2.5 text-xs font-semibold text-[var(--cs-danger-ink)] cursor-pointer"
               >
                 <LogOut className="h-4 w-4" />
                 <span>Sign out</span>

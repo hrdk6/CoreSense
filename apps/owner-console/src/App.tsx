@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   BarChart3,
   Cpu,
-  CreditCard,
   Download,
   Lock,
   LogOut,
@@ -30,7 +29,6 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { PlanConfig } from '@coresense/shared';
 import { getOwnerToken, ownerApi, setOwnerToken } from './ownerApi';
 
 type SectionId =
@@ -38,7 +36,6 @@ type SectionId =
   | 'downloads'
   | 'users'
   | 'engagement'
-  | 'revenue'
   | 'ai'
   | 'reliability'
   | 'feedback'
@@ -68,12 +65,10 @@ export const App: React.FC = () => {
   const [downloads, setDownloads] = useState<any>(null);
   const [users, setUsers] = useState<any>(null);
   const [engagement, setEngagement] = useState<any>(null);
-  const [revenue, setRevenue] = useState<any>(null);
   const [aiCosts, setAiCosts] = useState<any>(null);
   const [reliability, setReliability] = useState<any>(null);
   const [feedback, setFeedback] = useState<any>(null);
   const [configData, setConfigData] = useState<{
-    plans: PlanConfig[];
     alerts: Array<{ id: string; metric_key: string; label: string; threshold_value: number; unit: string; enabled: number }>;
     productConfig: Record<string, unknown>;
   } | null>(null);
@@ -114,7 +109,6 @@ export const App: React.FC = () => {
         ownerApi(`/owner-api/v1/downloads?range=${range}`),
         ownerApi(`/owner-api/v1/users?range=${range}`),
         ownerApi(`/owner-api/v1/engagement?range=${range}`),
-        ownerApi(`/owner-api/v1/revenue?range=${range}`),
         ownerApi(`/owner-api/v1/ai-costs?range=${range}`),
         ownerApi(`/owner-api/v1/reliability?range=${range}`),
         ownerApi('/owner-api/v1/feedback'),
@@ -138,11 +132,10 @@ export const App: React.FC = () => {
       if (results[2].status === 'fulfilled') setDownloads(results[2].value);
       if (results[3].status === 'fulfilled') setUsers(results[3].value);
       if (results[4].status === 'fulfilled') setEngagement(results[4].value);
-      if (results[5].status === 'fulfilled') setRevenue(results[5].value);
-      if (results[6].status === 'fulfilled') setAiCosts(results[6].value);
-      if (results[7].status === 'fulfilled') setReliability(results[7].value);
-      if (results[8].status === 'fulfilled') setFeedback(results[8].value);
-      if (results[9].status === 'fulfilled') setConfigData(results[9].value);
+      if (results[5].status === 'fulfilled') setAiCosts(results[5].value);
+      if (results[6].status === 'fulfilled') setReliability(results[6].value);
+      if (results[7].status === 'fulfilled') setFeedback(results[7].value);
+      if (results[8].status === 'fulfilled') setConfigData(results[8].value);
 
       const failedCount = results.filter((r) => r.status === 'rejected').length;
       if (failedCount > 0) {
@@ -180,16 +173,6 @@ export const App: React.FC = () => {
     await fetchAll();
   };
 
-  const handleSavePlanPrice = async (plan: PlanConfig, monthlyDollars: number) => {
-    const updated: PlanConfig = {
-      ...plan,
-      monthlyPriceCents: Math.max(0, Math.round(monthlyDollars * 100)),
-    };
-    await ownerApi(`/owner-api/v1/config/plans/${plan.tier}`, { method: 'PUT', body: updated });
-    setConfigNotice(`Updated ${plan.displayName} monthly pricing to $${monthlyDollars.toFixed(2)}.`);
-    await fetchAll();
-  };
-
   const handleUpdateAlertThreshold = async (id: string, thresholdValue: number) => {
     await ownerApi(`/owner-api/v1/config/alerts/${id}`, { method: 'PATCH', body: { thresholdValue } });
     setConfigNotice('Updated operational alert threshold.');
@@ -221,7 +204,7 @@ export const App: React.FC = () => {
               </div>
               <div>
                 <h1 className="oc-heading text-xl font-bold text-[var(--oc-ink)]">CoreSense Owner Console</h1>
-                <p className="text-xs text-[var(--oc-ink-muted)]">Private telemetry & commercial operations</p>
+                <p className="text-xs text-[var(--oc-ink-muted)]">Private telemetry & product operations</p>
               </div>
             </div>
             <button
@@ -299,7 +282,6 @@ export const App: React.FC = () => {
     { id: 'downloads', label: 'Downloads & installs', icon: <Download className="h-4 w-4" /> },
     { id: 'users', label: 'Users & retention', icon: <Users className="h-4 w-4" /> },
     { id: 'engagement', label: 'Engagement & funnel', icon: <Activity className="h-4 w-4" /> },
-    { id: 'revenue', label: 'Revenue & plans', icon: <CreditCard className="h-4 w-4" /> },
     { id: 'ai', label: 'AI usage & costs', icon: <Cpu className="h-4 w-4" /> },
     { id: 'reliability', label: 'Reliability & crashes', icon: <ServerCrash className="h-4 w-4" /> },
     { id: 'feedback', label: 'Feedback & support', icon: <MessageSquare className="h-4 w-4" /> },
@@ -500,7 +482,7 @@ export const App: React.FC = () => {
                   { label: 'First-launch activations', val: k.firstActivations, sub: `${k.activeInstallations30d} active installs (30d)`, tone: 'text-[var(--oc-ink)]' },
                   { label: 'Registered accounts', val: k.totalRegisteredUsers, sub: `+${k.newRegistrations} new, ${k.accountDeletions} deleted`, tone: 'text-[var(--oc-ink)]' },
                   { label: 'DAU / WAU / MAU', val: `${k.dau} / ${k.wau} / ${k.mau}`, sub: 'Unique anonymized active users', tone: 'text-[var(--oc-ok-ink)]' },
-                  { label: 'Estimated MRR', val: `$${k.mrrUsd.toFixed(2)}`, sub: `ARR $${k.arrUsd.toFixed(2)}, ${k.paidSubscribers} paid`, tone: 'text-[var(--oc-ok)]' },
+                  { label: 'Diagnostic scans', val: k.totalScans ?? 0, sub: `${k.totalInvestigations ?? 0} investigations started`, tone: 'text-[var(--oc-ok)]' },
                   { label: 'AI operating spend', val: `$${k.aiTotalCostUsd.toFixed(4)}`, sub: `${k.aiTotalRequests} reqs, $${k.aiCostPerActiveUserUsd}/MAU`, tone: 'text-[var(--oc-brand-ink)]' },
                   { label: 'API latency', val: `${k.apiAvgLatencyMs} ms`, sub: `${k.apiTotalCalls} calls, ${k.apiErrorRatePercent}% 5xx`, tone: 'text-[var(--oc-blue-ink)]' },
                   { label: 'Crash-free sessions', val: `${k.crashFreeSessionsPercent}%`, sub: `${k.crashCount} scrubbed crash report(s)`, tone: 'text-[var(--oc-ok-ink)]' },
@@ -695,21 +677,12 @@ export const App: React.FC = () => {
                 </div>
 
                 <div className="oc-panel p-5 space-y-3">
-                  <h2 className="oc-heading text-sm font-bold text-[var(--oc-ink)]">Platform & expertise mix</h2>
+                  <h2 className="oc-heading text-sm font-bold text-[var(--oc-ink)]">Platform adoption</h2>
                   <div className="space-y-2 text-xs">
                     {users.platformAdoption.map((p: any) => (
                       <div key={p.platform} className="flex justify-between rounded-md bg-[var(--oc-well)] border border-[var(--oc-border)] px-3 py-2">
                         <span className="capitalize text-[var(--oc-ink)]">{p.platform}</span>
                         <span className="font-mono text-[var(--oc-blue-ink)] oc-tabular">{p.users} account(s)</span>
-                      </div>
-                    ))}
-                    <div className="pt-2 border-t border-[var(--oc-border)] text-xs font-semibold text-[var(--oc-ink-muted)]">
-                      Expertise depth distribution
-                    </div>
-                    {users.expertiseDistribution.map((m: any) => (
-                      <div key={m.mode} className="flex justify-between rounded-md bg-[var(--oc-well)] border border-[var(--oc-border)] px-3 py-2">
-                        <span className="capitalize text-[var(--oc-ink)]">{m.mode}</span>
-                        <span className="font-mono text-[var(--oc-brand-ink)] oc-tabular">{m.users} user(s)</span>
                       </div>
                     ))}
                   </div>
@@ -743,63 +716,7 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* SECTION D: REVENUE & SUBSCRIPTIONS */}
-          {section === 'revenue' && revenue && (
-            <div className="space-y-5">
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3.5">
-                <div className="oc-panel p-4">
-                  <div className="text-xs text-[var(--oc-ink-muted)]">Free-to-paid conversion</div>
-                  <div className="font-mono text-2xl font-bold text-[var(--oc-ok)] oc-tabular mt-0.5">
-                    {revenue.conversionRatePercent}%
-                  </div>
-                </div>
-                {revenue.tierBreakdown.map((t: any) => (
-                  <div key={t.plan_tier} className="oc-panel p-4">
-                    <div className="text-xs text-[var(--oc-ink-muted)] capitalize">{t.plan_tier} tier accounts</div>
-                    <div className="font-mono text-2xl font-bold text-[var(--oc-ink)] oc-tabular mt-0.5">
-                      {t.accounts}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="oc-panel p-5 space-y-3">
-                <h2 className="oc-heading text-sm font-bold text-[var(--oc-ink)]">Verified billing events ledger</h2>
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-left text-[var(--oc-ink-muted)] border-b border-[var(--oc-border)]">
-                      <th className="py-2 font-medium">Time</th>
-                      <th className="py-2 font-medium">Event type</th>
-                      <th className="py-2 font-medium">Plan</th>
-                      <th className="py-2 font-medium">Provider</th>
-                      <th className="py-2 text-right font-medium">Amount</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[var(--oc-border)] font-mono oc-tabular">
-                    {revenue.recentEvents.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} className="py-6 text-center text-[var(--oc-ink-muted)] font-sans">
-                          No billing events recorded yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      revenue.recentEvents.map((ev: any) => (
-                        <tr key={ev.id}>
-                          <td className="py-2.5 text-[var(--oc-ink-muted)]">{new Date(ev.created_at).toLocaleString()}</td>
-                          <td className="py-2.5 text-[var(--oc-blue-ink)]">{ev.event_type}</td>
-                          <td className="py-2.5 capitalize">{ev.plan_tier} ({ev.billing_cycle})</td>
-                          <td className="py-2.5">{ev.provider}</td>
-                          <td className="py-2.5 text-right text-[var(--oc-ok-ink)]">${(ev.amount_cents / 100).toFixed(2)}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* SECTION E: AI USAGE & OPERATING COSTS */}
+          {/* SECTION D: AI USAGE & OPERATING COSTS */}
           {section === 'ai' && aiCosts && (
             <div className="space-y-4">
               <div className="oc-panel p-3.5 border-l-[3px] border-l-[var(--oc-ok)] text-xs text-[var(--oc-ok-ink)]">
@@ -980,7 +897,7 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {/* SECTION H: PRODUCT CONFIG, PLANS & MFA */}
+          {/* SECTION G: PRODUCT CONFIG & MFA */}
           {section === 'config' && configData && (
             <div className="space-y-5">
               {configNotice && (
@@ -988,28 +905,6 @@ export const App: React.FC = () => {
                   {configNotice}
                 </div>
               )}
-
-              <div className="oc-panel p-5 space-y-4">
-                <h2 className="oc-heading text-sm font-bold text-[var(--oc-ink)]">Dynamic commercial plan pricing</h2>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-                  {configData.plans.map((p) => (
-                    <div key={p.tier} className="rounded-lg bg-[var(--oc-well)] border border-[var(--oc-border)] p-4 space-y-2">
-                      <div className="oc-heading text-sm font-bold text-[var(--oc-ink)]">{p.displayName}</div>
-                      <div className="text-xs text-[var(--oc-ink-muted)]">{p.description}</div>
-                      <div className="flex items-center gap-2 pt-2">
-                        <span className="text-xs text-[var(--oc-ink-2)]">Monthly USD:</span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          defaultValue={(p.monthlyPriceCents / 100).toFixed(2)}
-                          onBlur={(e) => handleSavePlanPrice(p, Number(e.target.value))}
-                          className="oc-input w-24 px-2.5 py-1 text-xs font-mono oc-tabular"
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
 
               <div className="oc-panel p-5 space-y-4">
                 <h2 className="oc-heading text-sm font-bold text-[var(--oc-ink)]">Operational alert thresholds</h2>

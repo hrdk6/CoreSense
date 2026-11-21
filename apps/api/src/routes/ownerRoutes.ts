@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { CORESENSE_VERSION, PlanConfigSchema } from '@coresense/shared';
+import { CORESENSE_VERSION } from '@coresense/shared';
 import type { AppConfig } from '../config.js';
 import type { OwnerDatabase } from '../db/ownerDb.js';
 import {
@@ -188,21 +188,8 @@ export function registerOwnerRoutes(
     const wau = (ownerDb.db.prepare('SELECT COUNT(DISTINCT anonymous_user_hash) as c FROM product_events WHERE anonymous_user_hash IS NOT NULL AND created_at >= ?').get(cut7d) as { c: number }).c;
     const mau = (ownerDb.db.prepare('SELECT COUNT(DISTINCT anonymous_user_hash) as c FROM product_events WHERE anonymous_user_hash IS NOT NULL AND created_at >= ?').get(cut30d) as { c: number }).c;
 
-    // Revenue from verified billing events (MRR estimated from active paid plans)
-    const plans = ownerDb.getPlans();
-    const planPriceMap = new Map(plans.map((p) => [p.tier, p.monthlyPriceCents]));
-    const activeTierRows = ownerDb.db
-      .prepare('SELECT plan_tier, COUNT(*) as c FROM account_lifecycle WHERE deleted_at IS NULL GROUP BY plan_tier')
-      .all() as Array<{ plan_tier: string; c: number }>;
-
-    let mrrCents = 0;
-    let paidSubscribers = 0;
-    for (const r of activeTierRows) {
-      if (r.plan_tier !== 'free') {
-        paidSubscribers += r.c;
-        mrrCents += (planPriceMap.get(r.plan_tier as 'free' | 'pro' | 'premium') ?? 0) * r.c;
-      }
-    }
+    const totalScans = (ownerDb.db.prepare("SELECT COUNT(*) as c FROM product_events WHERE event_name = 'diagnostic_scan_run' AND created_at >= ?").get(cutoff) as { c: number }).c;
+    const totalInvestigations = (ownerDb.db.prepare("SELECT COUNT(*) as c FROM product_events WHERE event_name = 'investigation_started' AND created_at >= ?").get(cutoff) as { c: number }).c;
 
     const aiStats = ownerDb.db
       .prepare(
@@ -284,9 +271,8 @@ export function registerOwnerRoutes(
         dau,
         wau,
         mau,
-        paidSubscribers,
-        mrrUsd: Math.round(mrrCents) / 100,
-        arrUsd: Math.round(mrrCents * 12) / 100,
+        totalScans,
+        totalInvestigations,
         aiTotalRequests: aiStats.total_requests,
         aiTotalCostUsd: Math.round(aiStats.total_cost_usd * 10000) / 10000,
         aiCostPerActiveUserUsd: mau > 0 ? Math.round((aiStats.total_cost_usd / mau) * 10000) / 10000 : 0,
@@ -343,9 +329,6 @@ export function registerOwnerRoutes(
     const platformAdoption = ownerDb.db
       .prepare('SELECT platform, COUNT(*) as users FROM account_lifecycle WHERE deleted_at IS NULL GROUP BY platform ORDER BY users DESC')
       .all();
-    const expertiseDistribution = ownerDb.db
-      .prepare("SELECT COALESCE(expertise_mode, 'everyday') as mode, COUNT(DISTINCT anonymous_user_hash) as users FROM product_events WHERE anonymous_user_hash IS NOT NULL AND created_at >= ? GROUP BY mode")
-      .all(cutoff);
 
     const totalEver = (ownerDb.db.prepare('SELECT COUNT(*) as c FROM account_lifecycle').get() as { c: number }).c;
     const deletedEver = (ownerDb.db.prepare('SELECT COUNT(*) as c FROM account_lifecycle WHERE deleted_at IS NOT NULL').get() as { c: number }).c;
@@ -366,7 +349,6 @@ export function registerOwnerRoutes(
       dailySignups,
       dailyActive,
       platformAdoption,
-      expertiseDistribution,
       summary: {
         totalRegisteredEver: totalEver,
         activeAccounts: totalEver - deletedEver,
@@ -402,33 +384,7 @@ export function registerOwnerRoutes(
   });
 
   // ==========================================================================
-  // D. Revenue & Subscriptions (Verified Billing Events Only)
-  // ==========================================================================
-  app.get('/owner-api/v1/revenue', { preHandler: requireOwnerAuth }, async (req) => {
-    const cutoff = getDateCutoff((req.query as { range?: string }).range);
-    const tierBreakdown = ownerDb.db
-      .prepare('SELECT plan_tier, COUNT(*) as accounts FROM account_lifecycle WHERE deleted_at IS NULL GROUP BY plan_tier')
-      .all();
-    const billingBreakdown = ownerDb.db
-      .prepare('SELECT event_type, COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total_cents FROM billing_events WHERE created_at >= ? AND verified = 1 GROUP BY event_type')
-      .all(cutoff);
-    const recentEvents = ownerDb.db
-      .prepare('SELECT id, event_type, plan_tier, billing_cycle, amount_cents, currency, provider, verified, created_at FROM billing_events ORDER BY created_at DESC LIMIT 40')
-      .all();
-
-    const totalUsers = (ownerDb.db.prepare('SELECT COUNT(*) as c FROM account_lifecycle WHERE deleted_at IS NULL').get() as { c: number }).c;
-    const paidUsers = (ownerDb.db.prepare("SELECT COUNT(*) as c FROM account_lifecycle WHERE deleted_at IS NULL AND plan_tier != 'free'").get() as { c: number }).c;
-
-    return {
-      tierBreakdown,
-      billingBreakdown,
-      recentEvents,
-      conversionRatePercent: totalUsers > 0 ? Math.round((paidUsers / totalUsers) * 1000) / 10 : 0,
-    };
-  });
-
-  // ==========================================================================
-  // E. AI Usage & Operating Costs (Zero Private Prompts)
+  // D. AI Usage & Operating Costs (Zero Private Prompts)
   // ==========================================================================
   app.get('/owner-api/v1/ai-costs', { preHandler: requireOwnerAuth }, async (req) => {
     const cutoff = getDateCutoff((req.query as { range?: string }).range);
@@ -554,10 +510,9 @@ export function registerOwnerRoutes(
   });
 
   // ==========================================================================
-  // H. Live Product Configuration, Dynamic Plans & Budget Alert Rules
+  // G. Live Product Configuration & Budget Alert Rules
   // ==========================================================================
   app.get('/owner-api/v1/config', { preHandler: requireOwnerAuth }, async () => {
-    const plans = ownerDb.getPlans();
     const alerts = ownerDb.db.prepare('SELECT * FROM alert_rules').all();
     const cfgRows = ownerDb.db.prepare('SELECT key, value_json FROM product_config').all() as Array<{
       key: string;
@@ -565,17 +520,7 @@ export function registerOwnerRoutes(
     }>;
     const productConfig: Record<string, unknown> = {};
     for (const r of cfgRows) productConfig[r.key] = JSON.parse(r.value_json);
-    return { plans, alerts, productConfig };
-  });
-
-  app.put('/owner-api/v1/config/plans/:tier', { preHandler: requireOwnerAuth }, async (req, reply) => {
-    const { tier } = req.params as { tier: string };
-    const parsed = PlanConfigSchema.safeParse({ ...(req.body as Record<string, unknown>), tier });
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
-    ownerDb.db
-      .prepare('INSERT OR REPLACE INTO plan_configs (tier, config_json, updated_at) VALUES (?, ?, ?)')
-      .run(tier, JSON.stringify(parsed.data), new Date().toISOString());
-    return { ok: true, plan: parsed.data };
+    return { alerts, productConfig };
   });
 
   app.patch('/owner-api/v1/config/alerts/:id', { preHandler: requireOwnerAuth }, async (req, reply) => {
