@@ -2,17 +2,6 @@
 
 <img src="docs/assets/coresense-hero.svg" alt="CoreSense — AI-Powered Electronics Diagnostics & Repair Intelligence Platform" width="100%" />
 
-<br/>
-
-[![Version](https://img.shields.io/badge/version-1.0.0-7BA7F7?style=for-the-badge&logo=semanticrelease&logoColor=white)](package.json)
-[![Price](https://img.shields.io/badge/Access-100%25%20Free%20%26%20Unlimited-5EC6A8?style=for-the-badge&logo=openaccess&logoColor=white)](#1-what-is-coresense)
-[![Node](https://img.shields.io/badge/Node.js-24%2B%20Native%20SQLite-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](apps/api/package.json)
-[![Tauri](https://img.shields.io/badge/Desktop-Tauri%20v2%20%2B%20Rust-FFC131?style=for-the-badge&logo=tauri&logoColor=black)](apps/desktop/src-tauri/tauri.conf.json)
-[![Capacitor](https://img.shields.io/badge/Mobile-Capacitor%207%20%2B%20PWA-119EFF?style=for-the-badge&logo=capacitor&logoColor=white)](apps/mobile/capacitor.config.ts)
-[![React](https://img.shields.io/badge/Frontend-React%2019%20%2B%20Tailwind%20v4-61DAFB?style=for-the-badge&logo=react&logoColor=black)](apps/desktop/package.json)
-[![Gemini](https://img.shields.io/badge/AI-Gemini%204%20%7C%20OpenAI%20%7C%20Ollama%20%7C%20Local-8E75B2?style=for-the-badge&logo=googlegemini&logoColor=white)](apps/api/src/services/copilot.ts)
-[![Tests](https://img.shields.io/badge/Vitest-23%2F23%20Passing-10B981?style=for-the-badge&logo=vitest&logoColor=white)](tests)
-
 <p>
   <strong>An evidence-first, safety-gated electronics diagnostics &amp; repair intelligence platform</strong><br/>
   combining native OS telemetry, multimodal AI reasoning, hybrid technical-manual RAG, cross-device delta sync,<br/>
@@ -68,7 +57,7 @@ Unlike generic chat wrappers that hallucinate fixes, fabricate `"92% confidence"
 
 | Pillar | What CoreSense Enforces |
 | :--- | :--- |
-| **100% Free, Unlimited & Roleless** | Zero subscriptions, zero paywalls, and zero gated "pro/technician" tiers. Every response delivers plain-language clarity **plus** full technical evidence (exact error codes, SMART/rail telemetry, and discriminating tests) up front. |
+| **Unified Technical Depth** | Every diagnostic response delivers plain-language clarity **alongside** complete technical evidence (exact error codes, SMART/rail telemetry, and concrete discriminating tests) up front without gating detail behind user roles. |
 | **Honest Measurement Provenance** | Every single data point is cryptographically tagged with one of 5 strict provenance types: `measured`, `user_reported`, `inferred`, `unavailable`, or `simulated`. Synthetic test fixtures can **never** masquerade as real hardware telemetry. |
 | **Evidence-Linked Hypotheses (Zero Fake %)** | CoreSense **never** prints invented confidence percentages. Every hypothesis lists `whyPossible`, `supportingEvidence`, `conflictingEvidence`, a `discriminatingTest`, `strengthenCriteria`, `weakenCriteria`, and evolves across 5 states (`active`, `strengthened`, `weakened`, `confirmed`, `ruled_out`). |
 | **Zero Arbitrary Shell Execution** | AI models can **never** emit or run arbitrary bash/PowerShell/CMD commands. Only **9 predefined, Zod-validated tools** in `@coresense/shared` exist, and state-modifying tools (`flush_dns_cache`) require explicit per-action user approval. |
@@ -433,7 +422,7 @@ If any cloud provider returns an error or times out, CoreSense transparently fal
 | **Google Gemini** | `gemini-4-neon` | `@google/genai` Interactions API | Yes | Yes | \$1.25 / \$5.00 |
 | **Google Gemini** | `gemini-embedding-2` | `ai.models.embedContent` | — | — | \$0.025 (RAG embeddings) |
 | **OpenAI** | `gpt-4o-mini` *(default)* / `gpt-4o` | `/v1/chat/completions` | Yes | Prompt-guided | \$0.15 / \$0.60 (`4o-mini`) · \$2.50 / \$10.00 (`4o`) |
-| **Ollama (Local)** | `llama3.2` *(or custom BYOK)* | Local OpenAI-compatible (`/v1`) | Model-dep. | Prompt-guided | \$0.00 (Free local inference) |
+| **Ollama (Local)** | `llama3.2` *(or custom BYOK)* | Local OpenAI-compatible (`/v1`) | Model-dep. | Prompt-guided | \$0.00 (Local inference) |
 | **CoreSense Local** | `coresense-diagnostic-engine-v1` | Built-in Deterministic Engine | Clarity gate | Yes | \$0.00 (100% Offline) |
 
 ### Verified Hardware & Electronics Technical Reference Engine (`packages/shared/src/hardwareRef.ts`)
@@ -896,7 +885,7 @@ erDiagram
     }
 ```
 
-> **Note**: Legacy schema tables `billing_events` and `plan_configs` exist in `coresense_owner.db` for backward migration compatibility while CoreSense operates 100% free & unlimited with zero active billing endpoints.
+> **Note**: Legacy schema tables `billing_events` and `plan_configs` are retained in `coresense_owner.db` for backward migration compatibility; billing routes are disabled.
 
 <div align="center">
   <img src="docs/assets/diagnostic-pulse-divider.svg" alt="Signal Divider" width="100%" />
@@ -1182,7 +1171,7 @@ npm run typecheck # Strict TypeScript verification across all 5 workspaces
 | Test Suite | Tests | Verified Guarantees |
 | :--- | :---: | :--- |
 | **[`tests/ai-eval.test.ts`](tests/ai-eval.test.ts)** | **16 tests** *(Scenarios 1–18)* | • **Scenarios 1–8**: High CPU (`SearchIndexer`), Critical RAM (`95.6%`), Low Disk (`98.2%`), Predictive SMART SSD Failure (backup + pro referral), Wi-Fi Down, DNS Failure w/ IP OK (proposes approval-gated `flush_dns_cache`), Battery Wear (`54%`), Thermal Overheating (`97.5°C`)<br/>• **Scenario 9**: USB-C charging cable/port/PD isolation<br/>• **Scenarios 10 & 11**: App Crash Loop (`Event 1000` / `nvoglv64.dll`) & Windows Kernel-Power `41` / WHEA `0x124`<br/>• **Scenario 12**: Mobile OS Wi-Fi inspection restriction honesty<br/>• **Scenario 13**: Low-res `1×1` PNG board photo clarity rejection + macro request<br/>• **Scenarios 14 & 15**: Ambiguous motherboard replacement second-opinion & vague symptom intake<br/>• **Scenario 16**: Critical safety hard-blocks on swollen Li-ion puncture & PSU fuse foil bypass<br/>• **Scenario 17**: 5-State Resolution Verification (`unable_to_verify` without fresh scan → `verified_resolved` with before/after diff)<br/>• **Scenario 18**: Combined BSOD `0x00000124` + PCB `Q301`/`F1` + USB-C `5V 0.00A` decoding + multi-turn mobile Wi-Fi hypothesis evolution<br/>• **Global Invariant**: Every AI turn is asserted against `/\b\d{1,3}%\s*confiden/i` to guarantee **zero fabricated confidence percentages**. |
-| **[`tests/coresense.e2e.test.ts`](tests/coresense.e2e.test.ts)** | **7 suites** | 1. Distinct installer download vs idempotent first-launch activation tracking<br/>2. Account registration, AES-256-GCM BYOK encryption-at-rest check, 6-digit password recovery, live AI test & release manifest<br/>3. Genuine host CPU & RAM measurement + `403` block on arbitrary shell (`rm_rf_shell_exec`) & unapproved `flush_dns_cache`<br/>4. Cross-account workspace isolation (User B cannot view or delete User A's devices)<br/>5. Windows PE binary (`MZ`) upload rejection + multi-page manual indexing + prompt-injection `[REDACTED_UNTRUSTED_DIRECTIVE]` neutralization<br/>6. Desktop-to-Mobile Delta Sync (`sinceSeq` pull, `baseRevision` push, stale push conflict detection)<br/>7. 100% free & roleless assertion (`404` on removed billing/revenue routes), Customer JWT `403` rejection on Owner API, RFC 6238 TOTP MFA enrollment, full Owner API sweep, **hard PII-leak audit across `coresense_owner.db`**, full account JSON export, and permanent cascading deletion. |
+| **[`tests/coresense.e2e.test.ts`](tests/coresense.e2e.test.ts)** | **7 suites** | 1. Distinct installer download vs idempotent first-launch activation tracking<br/>2. Account registration, AES-256-GCM BYOK encryption-at-rest check, 6-digit password recovery, live AI test & release manifest<br/>3. Genuine host CPU & RAM measurement + `403` block on arbitrary shell (`rm_rf_shell_exec`) & unapproved `flush_dns_cache`<br/>4. Cross-account workspace isolation (User B cannot view or delete User A's devices)<br/>5. Windows PE binary (`MZ`) upload rejection + multi-page manual indexing + prompt-injection `[REDACTED_UNTRUSTED_DIRECTIVE]` neutralization<br/>6. Desktop-to-Mobile Delta Sync (`sinceSeq` pull, `baseRevision` push, stale push conflict detection)<br/>7. Disabled billing/revenue route verification (`404` assertions), Customer JWT `403` rejection on Owner API, RFC 6238 TOTP MFA enrollment, full Owner API sweep, **hard PII-leak audit across `coresense_owner.db`**, full account JSON export, and permanent cascading deletion. |
 
 <div align="center">
   <img src="docs/assets/diagnostic-pulse-divider.svg" alt="Signal Divider" width="100%" />
