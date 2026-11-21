@@ -5,6 +5,8 @@ import {
   type DiagnosticResult,
   type EvidenceItem,
   type Hypothesis,
+  type StructuredPcbInspection,
+  type SystemHealthAnalysis,
   VALID_TOOL_IDS,
   type VerificationOutcome,
   type VerificationReport,
@@ -17,6 +19,8 @@ import type { AppConfig } from '../config.js';
 import type { OwnerDatabase } from '../db/ownerDb.js';
 import type { RetrievedCitation } from './rag.js';
 import type { ImageInspectionMetadata } from './imageInspector.js';
+import { formatHealthAnalysisForCopilot } from './anomalyEngine.js';
+import { inspectHardwareImageStructured } from './visionInspector.js';
 
 export interface ProposedToolCall {
   id: string;
@@ -45,6 +49,7 @@ export interface CopilotTurnInput {
   existingEvidence: EvidenceItem[];
   existingHypotheses: Hypothesis[];
   attachedSnapshots: DiagnosticResult[];
+  healthAnalysis?: SystemHealthAnalysis | null;
   retrievedCitations: RetrievedCitation[];
   imageAttachment?: {
     filename: string;
@@ -75,6 +80,7 @@ export interface CopilotTurnOutput {
   safetyFlags: Array<{ code: string; title: string; severity: string }>;
   requiresProfessionalInspection: boolean;
   citationsUsed: RetrievedCitation[];
+  structuredInspection?: StructuredPcbInspection | null;
 }
 
 function estimateTokenCount(text: string): number {
@@ -651,6 +657,83 @@ function extractDiagnosticInsights(input: CopilotTurnInput): {
         'Please tell me:\n1. Can you turn the Wi-Fi toggle ON, or is it grayed out / flipping back off?\n2. Does the phone detect nearby Wi-Fi networks, or is the list completely empty?\n3. If it connects, does it say "No Internet" or repeatedly disconnect?\n4. Is Bluetooth still working normally?\n5. Did this start right after an OS update, a drop, or liquid exposure?',
       );
     }
+    // GPU / Graphics / Video / Artifacts / Code 43
+    else if (/\b(gpu|graphics|nvidia|radeon|amd|rtx|gtx|vram|artifact|black screen|no display|code 43|nvlddmkm|display driver)\b/i.test(text) && !isMobileTarget) {
+      proposeTool('gpu_diagnostics', 'Inspect discrete & integrated GPU adapters, VRAM, driver versions, OS device fault codes (such as Code 43), and live thermal/load telemetry.');
+      hypotheses.push(
+        {
+          id: crypto.randomUUID(),
+          title: 'GPU Driver / TDR Instability vs Hardware VRAM/Core Fault',
+          category: 'gpu',
+          whyPossible: 'Display blackouts, artifacts, or Windows Code 43 errors arise either from corrupted graphics drivers/OS updates or physical GPU solder/VRAM/power-delivery faults.',
+          supportingEvidence: ['User reported GPU, display, or graphics driver symptoms.'],
+          conflictingEvidence: ['GPU adapter status, driver error code, and thermal telemetry not yet measured.'],
+          discriminatingTest: 'Run GPU, VRAM & Driver Inspector to check ConfigManagerErrorCode (Code 43 / Code 10), driver version, and live GPU core temperature.',
+          strengthenCriteria: 'Device reports Code 43, core temperature >= 85°C, or visual artifacts appear inside BIOS/UEFI before OS drivers load.',
+          weakenCriteria: 'Clean GPU status (Code 0), normal temperatures, and clean driver reinstall resolves the issue.',
+          status: 'active',
+          recommendedToolId: 'gpu_diagnostics',
+        },
+      );
+      narrative.push('Let’s inspect your graphics adapters, driver status, OS error codes, and live GPU temperatures directly before assuming hardware failure.');
+    }
+    // USB / Bluetooth / Audio / Peripherals / Hotspot on Desktop or Mobile (excluding USB-C charging complaints handled below)
+    else if (
+      /\b(usb|bluetooth|headphone|speaker|audio|mic|microphone|webcam|camera|dongle|mouse|keyboard|port not working|hotspot|tether)\b/i.test(
+        text,
+      ) &&
+      !/\b(charg\w*|battery|power adapter|plug(?:ged)?\s*in|usb-?c\s*(?:pd|power|charg\w*))\b/i.test(text)
+    ) {
+      if (isMobileTarget) {
+        proposeTool('mobile_device_check', 'Run mobile Wi-Fi/hotspot latency probe and interactive speaker, mic, display, and sensor checks.');
+      } else {
+        proposeTool('peripherals_diagnostics', 'Enumerate USB controllers, Bluetooth adapters, audio endpoints, cameras, and OS Plug-and-Play fault codes.');
+      }
+      hypotheses.push({
+        id: crypto.randomUUID(),
+        title: 'Peripheral Driver / Bus Reset vs Physical Port or Radio Fault',
+        category: 'peripherals',
+        whyPossible: 'Non-responsive USB ports, missing Bluetooth radios, or silent audio endpoints are frequently caused by PnP driver errors (Code 10/28/43), power-management suspend bugs, or damaged port pins.',
+        supportingEvidence: ['User reported peripheral, audio, USB, Bluetooth, or hotspot symptom.'],
+        conflictingEvidence: ['OS Plug-and-Play device enumeration and error codes not yet inspected.'],
+        discriminatingTest: isMobileTarget
+          ? 'Run the Mobile Wi-Fi/Hotspot & Audio/Mic checks and verify whether Bluetooth/Wi-Fi fail simultaneously.'
+          : 'Run USB, Bluetooth, Audio & PnP Device Inspector to check whether the OS sees the controller and whether any ConfigManagerErrorCode is active.',
+        strengthenCriteria: 'PnP reports Code 10/43 or the entire USB root hub / Bluetooth adapter disappears from OS enumeration.',
+        weakenCriteria: 'Device enumerates cleanly with Code 0 and a known-good cable/accessory works.',
+        status: 'active',
+        recommendedToolId: isMobileTarget ? 'mobile_device_check' : 'peripherals_diagnostics',
+      });
+      narrative.push(
+        isMobileTarget
+          ? 'Let’s isolate whether the issue is OS/network configuration versus a physical port, audio transducer, or radio fault using the mobile permitted checks.'
+          : 'Let’s enumerate your USB controllers, Bluetooth radios, audio endpoints, and any OS Plug-and-Play device fault codes directly.',
+      );
+    }
+    // SoC / Processor throttling / benchmark check
+    else if (/\b(snapdragon|mediatek|dimensity|exynos|bionic|soc|throttl|benchmark|stress test|processor health|cpu health)\b/i.test(text)) {
+      if (isMobileTarget) {
+        proposeTool('mobile_device_check', 'Identify WebGL GPU/SoC renderer and run the 10-second multi-window SoC thermal-throttling stress test.');
+      } else {
+        proposeTool('hardware_stress_probe', 'Run bounded multi-window CPU compute stability & throttling probe plus sequential disk I/O throughput benchmark.');
+      }
+      hypotheses.push({
+        id: crypto.randomUUID(),
+        title: 'Thermal Throttling or Power-Delivery Clock Capping',
+        category: 'thermal_benchmark',
+        whyPossible: 'Sustained compute workloads expose thermal-paste drying, obstructed cooling, or mobile chassis heat saturation as progressive throughput drops across consecutive intervals.',
+        supportingEvidence: ['User requested processor/SoC health or throttling evaluation.'],
+        conflictingEvidence: ['Multi-window sustained compute throughput has not been benchmarked yet.'],
+        discriminatingTest: isMobileTarget
+          ? 'Run the 10-second Mobile SoC Thermal-Throttling Test and compare window 1 peak throughput vs window 5 sustained throughput.'
+          : 'Run the Bounded CPU Throttling & Disk I/O Benchmark to measure throughput drop % across consecutive windows.',
+        strengthenCriteria: 'Sustained compute throughput drops > 20% from peak while chassis temperature rises.',
+        weakenCriteria: 'Throughput remains > 90% stable across all windows.',
+        status: 'active',
+        recommendedToolId: isMobileTarget ? 'mobile_device_check' : 'hardware_stress_probe',
+      });
+      narrative.push('Instead of guessing whether your processor or SoC is healthy, let’s measure sustained multi-window compute throughput and thermal throttling stability directly.');
+    }
     // Overheating / fan / thermal
     else if (/\b(overheat|hot|thermal|fan loud|burning hot|shut down.*hot)\b/i.test(text)) {
       if (!isMobileTarget) {
@@ -865,6 +948,18 @@ function composeLocalDiagnosticReply(
     parts.push(`**Collected Diagnostic Evidence:**\n${evLines.join('\n')}`);
   }
 
+  // Predictive Telemetry ML insights (real anomalies & degradation slopes only)
+  if (input.healthAnalysis && (input.healthAnalysis.anomalies.length > 0 || input.healthAnalysis.forecasts.some((f) => f.status === 'degrading' || f.status === 'urgent'))) {
+    const mlLines: string[] = [];
+    for (const a of input.healthAnalysis.anomalies) {
+      mlLines.push(`- **[ML Anomaly • ${a.severity.toUpperCase()}]** ${a.explanation}`);
+    }
+    for (const f of input.healthAnalysis.forecasts.filter((fc) => fc.status === 'degrading' || fc.status === 'urgent')) {
+      mlLines.push(`- **[OLS Forecast • ${f.status.toUpperCase()}]** ${f.explanation}`);
+    }
+    parts.push(`**Predictive Telemetry ML Findings:**\n${mlLines.join('\n')}`);
+  }
+
   // Image clarity / offline vision disclosure
   if (input.imageAttachment) {
     const meta = input.imageAttachment.metadata;
@@ -939,9 +1034,9 @@ async function callGeminiCopilot(
 }> {
   const ai = new GoogleGenAI({ apiKey });
 
-  const inputBlocks: Array<Record<string, unknown>> = [{ type: 'text', text: userPrompt }];
+  const contentBlocks: Array<Record<string, unknown>> = [{ type: 'text', text: userPrompt }];
   if (imageAttachment) {
-    inputBlocks.push({
+    contentBlocks.push({
       type: 'image',
       data: imageAttachment.base64Data,
       mime_type: imageAttachment.mimeType,
@@ -962,13 +1057,42 @@ async function callGeminiCopilot(
     },
   }));
 
-  // Use modern @google/genai Interactions API (current SDK standard) with validated tool registry
-  const interaction = await ai.interactions.create({
-    model,
-    system_instruction: systemInstruction,
-    input: inputBlocks as unknown as string,
-    tools: toolDeclarations as unknown as undefined,
-  });
+  // Use modern @google/genai v1 GA Interactions API (UserInputStep schema) with validated tool registry + bounded 22s failover
+  const candidateModels = Array.from(new Set([model, 'gemini-3.5-flash-lite']));
+  let interaction: {
+    output_text?: string | null;
+    steps?: Array<{ type?: string; name?: string; arguments?: Record<string, unknown> }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  } | null = null;
+  let lastErr: unknown = null;
+  for (const activeModel of candidateModels) {
+    try {
+      interaction = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Gemini copilot (${activeModel}) timed out`)), 22_000);
+        ai.interactions
+          .create({
+            model: activeModel,
+            system_instruction: systemInstruction,
+            input: [{ type: 'user_input', content: contentBlocks }] as unknown as string,
+            tools: toolDeclarations as unknown as undefined,
+          })
+          .then(
+            (v) => {
+              clearTimeout(timer);
+              resolve(v as typeof interaction);
+            },
+            (e) => {
+              clearTimeout(timer);
+              reject(e);
+            },
+          );
+      });
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!interaction) throw lastErr ?? new Error('Gemini interaction failed');
 
   const modelToolCalls: Array<{ toolId: string; parameters: Record<string, unknown> }> = [];
   const steps = (interaction as unknown as {
@@ -1210,6 +1334,21 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
   let assistantReply = '';
   let inputTokens = estimateTokenCount(input.userMessage);
   let outputTokens = 0;
+  let structuredInspection: StructuredPcbInspection | null = null;
+
+  // Launch Structured Multimodal Vision PCB / Hardware Inspector immediately (runs concurrently with cloud Copilot!)
+  const visionPromise = input.imageAttachment
+    ? inspectHardwareImageStructured({
+        provider,
+        apiKey,
+        baseUrl,
+        model,
+        userMessage: input.userMessage,
+        imageAttachment: input.imageAttachment,
+      })
+    : null;
+
+  const mlDigest = input.healthAnalysis ? formatHealthAnalysisForCopilot(input.healthAnalysis) : '';
 
   if (provider === 'gemini' || provider === 'openai' || provider === 'ollama') {
     const systemInstruction = buildSystemInstruction(
@@ -1223,6 +1362,7 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
       input.attachedSnapshots.length
         ? `Measured Diagnostic Evidence:\n${input.attachedSnapshots.map((s) => `- [${s.measurementType}] ${s.toolId}: ${s.summary}\n  Warnings: ${s.warnings.map((w) => w.detail).join(' | ') || 'None'}`).join('\n')}`
         : '',
+      mlDigest,
       safety.triggered
         ? `MANDATORY SAFETY WARNINGS TO INCLUDE:\n${safety.hazards.map((h) => `- ${h.title}: ${h.safeGuidance}`).join('\n')}`
         : '',
@@ -1322,6 +1462,38 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
     });
   }
 
+  // Await concurrent structured PCB/hardware vision result and append evidence ledger entry
+  if (visionPromise) {
+    const visionResult = await visionPromise;
+    structuredInspection = visionResult.inspection;
+    if (visionResult.inputTokens > 0 || visionResult.outputTokens > 0) {
+      await input.ownerDb.recordAiUsage({
+        anonymousUserHash: input.anonymousUserHash,
+        provider,
+        model,
+        feature: 'structured_pcb_vision',
+        modality: 'vision',
+        inputTokens: visionResult.inputTokens,
+        outputTokens: visionResult.outputTokens,
+        latencyMs: Date.now() - started,
+        estimatedCostUsd: estimateCostUsd(provider, model, visionResult.inputTokens, visionResult.outputTokens),
+        success: true,
+      });
+    }
+    const suspectCount = structuredInspection.identifiedComponents.filter(
+      (c) => c.visualCondition !== 'normal' && c.visualCondition !== 'unreadable',
+    ).length;
+    insights.newEvidence.push({
+      id: crypto.randomUUID(),
+      kind: 'image_observation',
+      measurementType: structuredInspection.analysisMode === 'local_metadata_fallback' ? 'unavailable' : 'inferred',
+      title: `Structured Visual Inspection: ${structuredInspection.boardOrDeviceType}`,
+      summary: `Clarity: ${structuredInspection.imageClarity}. Identified ${structuredInspection.identifiedComponents.length} component(s) (${suspectCount} suspect visual indicator(s)). ${structuredInspection.visualAnomalies.join('; ') || 'No visible physical defects highlighted.'}`,
+      source: structuredInspection.analysisMode,
+      collectedAt: new Date().toISOString(),
+    });
+  }
+
   return {
     assistantReply,
     aiProvider: provider,
@@ -1334,6 +1506,7 @@ export async function runCopilotTurn(input: CopilotTurnInput): Promise<CopilotTu
     requiresProfessionalInspection:
       insights.requiresProfessionalInspection || safety.hazards.some((h) => h.requiresProfessionalReferral),
     citationsUsed: input.retrievedCitations,
+    structuredInspection,
   };
 }
 

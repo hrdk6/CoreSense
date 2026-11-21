@@ -3,7 +3,7 @@ import { z } from 'zod';
 // ============================================================================
 // CoreSense Brand & Platform Constants
 // ============================================================================
-export const CORESENSE_VERSION = '1.0.0';
+export const CORESENSE_VERSION = '1.1.0';
 export const CORESENSE_TAGLINE = "Understand what's happening beneath the surface.";
 
 export const PlatformSchema = z.enum(['windows', 'macos', 'linux', 'ios', 'android', 'web']);
@@ -121,7 +121,25 @@ export type VerificationReport = z.infer<typeof VerificationReportSchema>;
 export const DiagnosticWarningSchema = z.object({
   code: z.string(),
   severity: z.enum(['info', 'warning', 'critical']),
-  component: z.enum(['cpu', 'memory', 'storage', 'network', 'os', 'battery', 'thermal', 'audio', 'display', 'camera', 'sensor']),
+  component: z.enum([
+    'cpu',
+    'memory',
+    'storage',
+    'gpu',
+    'network',
+    'os',
+    'battery',
+    'thermal',
+    'audio',
+    'display',
+    'camera',
+    'sensor',
+    'usb',
+    'bluetooth',
+    'peripherals',
+    'soc',
+    'benchmark',
+  ]),
   title: z.string(),
   detail: z.string(),
 });
@@ -204,3 +222,129 @@ export const SyncMutationSchema = z.object({
   clientTimestamp: z.string(),
 });
 export type SyncMutation = z.infer<typeof SyncMutationSchema>;
+
+// ============================================================================
+// Predictive ML Telemetry Anomaly & Degradation Engine Schemas
+// ============================================================================
+export const HealthSubsystemSchema = z.enum([
+  'cpu',
+  'memory',
+  'storage',
+  'gpu',
+  'battery',
+  'network',
+  'thermal',
+  'peripherals',
+]);
+export type HealthSubsystem = z.infer<typeof HealthSubsystemSchema>;
+
+export const SubsystemHealthScoreSchema = z.object({
+  subsystem: HealthSubsystemSchema,
+  score: z.number().min(0).max(100).nullable(),
+  status: z.enum(['healthy', 'attention', 'degraded', 'critical', 'insufficient_data']),
+  sampleCount: z.number().int().min(0),
+  latestSummary: z.string(),
+  factors: z.array(z.string()),
+});
+export type SubsystemHealthScore = z.infer<typeof SubsystemHealthScoreSchema>;
+
+export const TelemetryAnomalySchema = z.object({
+  id: z.string(),
+  metric: z.string(),
+  subsystem: HealthSubsystemSchema,
+  severity: z.enum(['info', 'warning', 'critical']),
+  latestValue: z.number(),
+  unit: z.string(),
+  baselineMedian: z.number(),
+  baselineSpread: z.number(),
+  zScore: z.number(),
+  method: z.enum(['modified_z_mad', 'standard_z']),
+  sampleCount: z.number().int().min(1),
+  explanation: z.string(),
+  detectedAt: z.string(),
+});
+export type TelemetryAnomaly = z.infer<typeof TelemetryAnomalySchema>;
+
+export const DegradationForecastSchema = z.object({
+  metric: z.string(),
+  subsystem: z.enum(['battery', 'storage', 'thermal']),
+  currentValue: z.number(),
+  unit: z.string(),
+  slopePerDay: z.number(),
+  rSquared: z.number().min(0).max(1),
+  thresholdValue: z.number(),
+  thresholdLabel: z.string(),
+  estimatedDaysToThreshold: z.number().nullable(),
+  status: z.enum(['stable', 'degrading', 'urgent', 'insufficient_history']),
+  sampleCount: z.number().int().min(0),
+  spanDays: z.number().min(0),
+  explanation: z.string(),
+});
+export type DegradationForecast = z.infer<typeof DegradationForecastSchema>;
+
+export const SystemHealthAnalysisSchema = z.object({
+  analyzedAt: z.string(),
+  deviceId: z.string().nullable(),
+  totalSnapshotsAnalyzed: z.number().int().min(0),
+  realSnapshotsAnalyzed: z.number().int().min(0),
+  baselineReady: z.boolean(),
+  overallHealthScore: z.number().min(0).max(100).nullable(),
+  overallStatus: z.enum(['healthy', 'attention', 'degraded', 'critical', 'insufficient_data']),
+  methodology: z.string(),
+  subsystemScores: z.array(SubsystemHealthScoreSchema),
+  anomalies: z.array(TelemetryAnomalySchema),
+  forecasts: z.array(DegradationForecastSchema),
+  summaryBullets: z.array(z.string()),
+});
+export type SystemHealthAnalysis = z.infer<typeof SystemHealthAnalysisSchema>;
+
+// ============================================================================
+// Structured Multimodal Vision PCB / Hardware Inspector Schemas
+// ============================================================================
+export const PcbComponentConditionSchema = z.enum([
+  'normal',
+  'suspect_burn',
+  'suspect_corrosion',
+  'suspect_cracked',
+  'suspect_bulged',
+  'missing_or_lifted',
+  'loose_or_bent',
+  'unreadable',
+]);
+export type PcbComponentCondition = z.infer<typeof PcbComponentConditionSchema>;
+
+export const PcbComponentFindingSchema = z.object({
+  designator: z.string(),
+  componentType: z.string(),
+  functionSummary: z.string(),
+  visualCondition: PcbComponentConditionSchema,
+  region: z.string(),
+  visualEvidence: z.string(),
+  boundingBox: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(),
+});
+export type PcbComponentFinding = z.infer<typeof PcbComponentFindingSchema>;
+
+export const ElectricalTestRequirementSchema = z.object({
+  target: z.string(),
+  testMethod: z.string(),
+  expectedBaseline: z.string(),
+  safetyNote: z.string(),
+});
+export type ElectricalTestRequirement = z.infer<typeof ElectricalTestRequirementSchema>;
+
+export const StructuredPcbInspectionSchema = z.object({
+  analysisMode: z.enum([
+    'gemini_vision_structured',
+    'openai_vision_structured',
+    'local_metadata_fallback',
+  ]),
+  boardOrDeviceType: z.string(),
+  imageClarity: z.enum(['clear', 'moderate', 'unclear_macro_needed']),
+  clarityNotes: z.string(),
+  identifiedComponents: z.array(PcbComponentFindingSchema),
+  visualAnomalies: z.array(z.string()),
+  electricalTestsRequired: z.array(ElectricalTestRequirementSchema),
+  safetyWarnings: z.array(z.string()),
+  disclaimer: z.string(),
+});
+export type StructuredPcbInspection = z.infer<typeof StructuredPcbInspectionSchema>;

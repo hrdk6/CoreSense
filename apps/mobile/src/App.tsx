@@ -20,6 +20,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
+import type { StructuredPcbInspection } from '@coresense/shared';
 import {
   detectMobilePlatform,
   getApiBaseUrl,
@@ -128,7 +129,15 @@ export const App: React.FC = () => {
 
   // Mobile Copilot state
   const [invId, setInvId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Array<{ id: string; role: string; content: string; aiProvider?: string }>>([]);
+  const [messages, setMessages] = useState<
+    Array<{
+      id: string;
+      role: string;
+      content: string;
+      aiProvider?: string;
+      structuredInspection?: StructuredPcbInspection | null;
+    }>
+  >([]);
   const [hypotheses, setHypotheses] = useState<Array<{ id: string; title: string; discriminatingTest: string }>>([]);
   const [prompt, setPrompt] = useState('');
   const [photo, setPhoto] = useState<{ base64: string; mimeType: string; filename: string } | null>(null);
@@ -671,6 +680,56 @@ export const App: React.FC = () => {
                           <div className="space-y-1">{renderMobileMarkdown(m.content)}</div>
                         ) : (
                           m.content
+                        )}
+                        {m.role === 'assistant' && m.structuredInspection && (
+                          <div className="mt-2.5 rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5 space-y-2 whitespace-normal">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-[11px] text-[var(--cs-ink)]">
+                                PCB Vision: {m.structuredInspection.boardOrDeviceType}
+                              </span>
+                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--cs-well)] border border-[var(--cs-border)] text-[var(--cs-accent-ink)]">
+                                {m.structuredInspection.imageClarity.replace(/_/g, ' ')}
+                              </span>
+                            </div>
+                            {m.structuredInspection.identifiedComponents.length > 0 && (
+                              <div className="space-y-1">
+                                {m.structuredInspection.identifiedComponents.slice(0, 6).map((c, idx) => (
+                                  <div
+                                    key={idx}
+                                    className="rounded bg-[var(--cs-surface)] border border-[var(--cs-border)] px-2 py-1.5 text-[11px] space-y-0.5"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-mono font-semibold text-[var(--cs-ink)]">
+                                        {c.designator} · {c.componentType}
+                                      </span>
+                                      <span
+                                        className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
+                                          c.visualCondition === 'normal'
+                                            ? 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                                            : c.visualCondition === 'unreadable'
+                                              ? 'bg-[var(--cs-well)] border-[var(--cs-border)] text-[var(--cs-ink-muted)]'
+                                              : 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                                        }`}
+                                      >
+                                        {c.visualCondition.replace(/_/g, ' ')}
+                                      </span>
+                                    </div>
+                                    <div className="text-[var(--cs-ink-2)]">{c.visualEvidence}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {m.structuredInspection.electricalTestsRequired.length > 0 && (
+                              <div className="text-[11px] text-[var(--cs-ink-2)] pt-1 border-t border-[var(--cs-border)]">
+                                <span className="font-semibold text-[var(--cs-ink)]">Confirm electrically: </span>
+                                {m.structuredInspection.electricalTestsRequired[0].target} —{' '}
+                                {m.structuredInspection.electricalTestsRequired[0].testMethod}
+                              </div>
+                            )}
+                            <div className="text-[10px] text-[var(--cs-ink-muted)] italic">
+                              {m.structuredInspection.disclaimer}
+                            </div>
+                          </div>
                         )}
                         {m.aiProvider && (
                           <div className="mt-2 pt-1.5 border-t border-[var(--cs-border)] text-[10px] font-mono text-[var(--cs-ink-muted)]">

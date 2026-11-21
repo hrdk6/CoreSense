@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import fs from 'node:fs';
+import path from 'node:path';
 import os from 'node:os';
 import dns from 'node:dns/promises';
 import net from 'node:net';
@@ -921,13 +923,706 @@ export async function collectPowerAndPeripherals(): Promise<DiagnosticResult> {
   };
 }
 
+const WINDOWS_PNP_ERROR_DESCRIPTIONS: Record<number, string> = {
+  1: 'Code 1: Device is not configured correctly (driver install or update needed).',
+  10: 'Code 10: Device cannot start (driver/firmware initialization failure or hardware fault).',
+  12: 'Code 12: Cannot find enough free system resources (IRQ/PCIe/BIOS allocation conflict).',
+  18: 'Code 18: Reinstall the drivers for this device.',
+  19: 'Code 19: Registry configuration is incomplete or damaged.',
+  22: 'Code 22: Device is manually disabled in Device Manager.',
+  28: 'Code 28: Drivers for this device are not installed.',
+  31: 'Code 31: Device is not working properly because Windows cannot load required drivers.',
+  37: 'Code 37: Driver failed to initialize its hardware driver entry point.',
+  39: 'Code 39: Driver may be corrupted or missing.',
+  43: 'Code 43: Windows stopped this device because it reported hardware/driver problems (common on GPU VRAM/driver faults or failing USB controllers).',
+  45: 'Code 45: Device is currently not connected to the computer.',
+  47: 'Code 47: Device has been prepared for safe removal.',
+  56: 'Code 56: Windows is still configuring class settings for this device (often seen on VPN/virtual WAN miniport drivers).',
+};
+
+function parsePsDate(val: unknown): string | null {
+  if (!val) return null;
+  const s = String(val);
+  const m = s.match(/\/Date\((\d+)\)\//);
+  if (m) {
+    const dt = new Date(Number(m[1]));
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  }
+  const dt = new Date(s);
+  return !Number.isNaN(dt.getTime()) ? dt.toISOString().slice(0, 10) : null;
+}
+
+function describePnpError(code: number | null | undefined): string {
+  if (!code || code === 0) return 'OK';
+  return WINDOWS_PNP_ERROR_DESCRIPTIONS[code] ?? `Code ${code}: OS reported a Plug-and-Play device error.`;
+}
+
+function normalizePnpDeviceId(val: unknown): string {
+  return typeof val === 'string' ? val.trim() : '';
+}
+
+export async function collectGpuDiagnostics(): Promise<DiagnosticResult> {
+  const started = Date.now();
+  const platform = detectCurrentPlatform();
+  const warnings: DiagnosticWarning[] = [];
+  const limitations: string[] = [];
+  let source = `OS Graphics Collector (${platform})`;
+
+  const adapters: Array<{
+    name: string;
+    vendor: string;
+    driverVersion: string | null;
+    driverDate: string | null;
+    vramMb: number | null;
+    vramUsedMb: number | null;
+    utilizationPercent: number | null;
+    temperatureCelsius: number | null;
+    powerDrawWatts: number | null;
+    clockMhz: number | null;
+    resolution: string | null;
+    refreshHz: number | null;
+    status: string;
+    errorCode: number | null;
+    errorDescription: string | null;
+    telemetrySource: string;
+  }> = [];
+
+  // Live NVIDIA telemetry via nvidia-smi when installed (strictly read-only fixed args)
+  const nvidiaMetrics = new Map<
+    string,
+    {
+      name: string;
+      tempC: number | null;
+      utilPct: number | null;
+      memUsedMb: number | null;
+      memTotalMb: number | null;
+      powerW: number | null;
+      clockMhz: number | null;
+      driver: string | null;
+    }
+  >();
+
+  const smi = await runFixedCommand(
+    'nvidia-smi',
+    [
+      '--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw,clocks.current.graphics,driver_version',
+      '--format=csv,noheader,nounits',
+    ],
+    4500,
+  );
+  if (smi?.stdout) {
+    for (const line of smi.stdout.split(/\r?\n/).filter(Boolean)) {
+      const parts = line.split(',').map((s) => s.trim());
+      if (parts.length >= 8) {
+        const toNum = (v: string): number | null => {
+          const n = Number(v);
+          return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+        };
+        const name = parts[0];
+        nvidiaMetrics.set(name.toLowerCase(), {
+          name,
+          tempC: toNum(parts[1]),
+          utilPct: toNum(parts[2]),
+          memUsedMb: toNum(parts[3]),
+          memTotalMb: toNum(parts[4]),
+          powerW: toNum(parts[5]),
+          clockMhz: toNum(parts[6]),
+          driver: parts[7] || null,
+        });
+      }
+    }
+  }
+
+  if (platform === 'windows') {
+    source = nvidiaMetrics.size > 0 ? 'Windows CIM Win32_VideoController + nvidia-smi (Read-Only)' : 'Windows CIM Win32_VideoController (Read-Only)';
+    const winGpuPayload = await runPowershellJson<{
+      gpus?: Array<{
+        Name?: string;
+        AdapterCompatibility?: string;
+        DriverVersion?: string;
+        DriverDate?: string;
+        AdapterRAM?: number;
+        Status?: string;
+        ConfigManagerErrorCode?: number;
+        CurrentHorizontalResolution?: number;
+        CurrentVerticalResolution?: number;
+        CurrentRefreshRate?: number;
+      }>;
+      regVram?: Array<{ Desc?: string; QwMem?: number }>;
+    }>(`
+      $gpus = Get-CimInstance Win32_VideoController | Select-Object Name, AdapterCompatibility, DriverVersion, DriverDate, AdapterRAM, Status, ConfigManagerErrorCode, CurrentHorizontalResolution, CurrentVerticalResolution, CurrentRefreshRate
+      $regVram = Get-ItemProperty -Path 'HKLM:\\SYSTEM\\ControlSet001\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0*' -ErrorAction SilentlyContinue | Where-Object { $_.'HardwareInformation.qwMemorySize' -gt 0 } | ForEach-Object { @{ Desc = $_.DriverDesc; QwMem = $_.'HardwareInformation.qwMemorySize' } }
+      @{ gpus = $gpus; regVram = $regVram } | ConvertTo-Json -Depth 4
+    `);
+
+    const regVramList = normalizeArray(winGpuPayload?.regVram);
+    for (const g of normalizeArray(winGpuPayload?.gpus)) {
+      const name = String(g.Name || 'Graphics Adapter');
+      const nv =
+        nvidiaMetrics.get(name.toLowerCase()) ||
+        Array.from(nvidiaMetrics.values()).find((m) => name.toLowerCase().includes(m.name.toLowerCase()) || m.name.toLowerCase().includes(name.toLowerCase()));
+      const regMatch = regVramList.find((r) => r.Desc && (name.toLowerCase().includes(r.Desc.toLowerCase()) || r.Desc.toLowerCase().includes(name.toLowerCase())));
+      const errCode = typeof g.ConfigManagerErrorCode === 'number' ? g.ConfigManagerErrorCode : 0;
+      // Prefer nvidia-smi -> 64-bit Registry qwMemorySize -> legacy 32-bit WMI AdapterRAM
+      const regVramMb = regMatch?.QwMem && regMatch.QwMem > 0 ? Math.round(regMatch.QwMem / (1024 * 1024)) : null;
+      const wmiVramMb = g.AdapterRAM && g.AdapterRAM > 0 ? Math.round(g.AdapterRAM / (1024 * 1024)) : null;
+      const vramMb = nv?.memTotalMb ?? regVramMb ?? wmiVramMb;
+      const resolution =
+        g.CurrentHorizontalResolution && g.CurrentVerticalResolution
+          ? `${g.CurrentHorizontalResolution}x${g.CurrentVerticalResolution}`
+          : null;
+
+      adapters.push({
+        name,
+        vendor: String(g.AdapterCompatibility || (nv ? 'NVIDIA' : 'Unknown')),
+        driverVersion: nv?.driver ?? g.DriverVersion ?? null,
+        driverDate: parsePsDate(g.DriverDate),
+        vramMb,
+        vramUsedMb: nv?.memUsedMb ?? null,
+        utilizationPercent: nv?.utilPct ?? null,
+        temperatureCelsius: nv?.tempC ?? null,
+        powerDrawWatts: nv?.powerW ?? null,
+        clockMhz: nv?.clockMhz ?? null,
+        resolution,
+        refreshHz: g.CurrentRefreshRate ?? null,
+        status: errCode === 0 ? String(g.Status || 'OK') : 'Error',
+        errorCode: errCode !== 0 ? errCode : null,
+        errorDescription: errCode !== 0 ? describePnpError(errCode) : null,
+        telemetrySource: nv ? 'Win32_VideoController + nvidia-smi' : 'Win32_VideoController',
+      });
+    }
+  } else if (platform === 'macos') {
+    source = 'macOS system_profiler SPDisplaysDataType (Read-Only)';
+    const res = await runFixedCommand('system_profiler', ['SPDisplaysDataType', '-json'], 6000);
+    if (res?.stdout) {
+      try {
+        const parsed = JSON.parse(res.stdout) as { SPDisplaysDataType?: Array<Record<string, unknown>> };
+        for (const g of parsed.SPDisplaysDataType ?? []) {
+          const vramRaw = String(g.spdisplays_vram ?? g.spdisplays_vram_shared ?? '');
+          const vramMatch = vramRaw.match(/(\d+)\s*(GB|MB)/i);
+          const vramMb = vramMatch
+            ? Number(vramMatch[1]) * (vramMatch[2].toUpperCase() === 'GB' ? 1024 : 1)
+            : null;
+          const displays = Array.isArray(g.spdisplays_ndrvs) ? (g.spdisplays_ndrvs as Array<Record<string, unknown>>) : [];
+          const firstDisp = displays[0];
+          adapters.push({
+            name: String(g.sppci_model ?? g._name ?? 'Apple / Mac GPU'),
+            vendor: String(g.spdisplays_vendor ?? 'Apple'),
+            driverVersion: String(g.spdisplays_mtlgpufamilysupport ?? g.spdisplays_metal ?? 'Metal'),
+            driverDate: null,
+            vramMb,
+            vramUsedMb: null,
+            utilizationPercent: null,
+            temperatureCelsius: null,
+            powerDrawWatts: null,
+            clockMhz: null,
+            resolution: firstDisp?._spdisplays_resolution ? String(firstDisp._spdisplays_resolution) : null,
+            refreshHz: null,
+            status: 'OK',
+            errorCode: null,
+            errorDescription: null,
+            telemetrySource: 'system_profiler',
+          });
+        }
+      } catch {
+        limitations.push('Unable to parse macOS SPDisplaysDataType output.');
+      }
+    }
+  } else {
+    source = nvidiaMetrics.size > 0 ? 'Linux lspci + nvidia-smi + sysfs DRM (Read-Only)' : 'Linux lspci + sysfs DRM (Read-Only)';
+    // Check sysfs DRM GPU thermal sensors (AMD / Intel / Nouveau)
+    let drmTempC: number | null = null;
+    try {
+      const drmDir = '/sys/class/drm';
+      if (fs.existsSync(drmDir)) {
+        for (const card of fs.readdirSync(drmDir).filter((c) => /^card\d+$/.test(c))) {
+          const hwmonBase = path.join(drmDir, card, 'device', 'hwmon');
+          if (fs.existsSync(hwmonBase)) {
+            for (const hm of fs.readdirSync(hwmonBase)) {
+              const tFile = path.join(hwmonBase, hm, 'temp1_input');
+              if (fs.existsSync(tFile)) {
+                const raw = Number(fs.readFileSync(tFile, 'utf8').trim());
+                if (Number.isFinite(raw) && raw > 1000) {
+                  drmTempC = Math.round((raw / 1000) * 10) / 10;
+                  break;
+                }
+              }
+            }
+          }
+          if (drmTempC !== null) break;
+        }
+      }
+    } catch {
+      // ignore sysfs permission error
+    }
+
+    const lspci = await runFixedCommand('lspci', ['-nn'], 4000);
+    if (lspci?.stdout) {
+      for (const line of lspci.stdout.split('\n')) {
+        if (/\b(VGA compatible controller|3D controller|Display controller)\b/i.test(line)) {
+          const desc = line.replace(/^[^:]+:\s*/, '').trim();
+          const nv = Array.from(nvidiaMetrics.values()).find((m) =>
+            desc.toLowerCase().includes('nvidia') || desc.toLowerCase().includes(m.name.toLowerCase()),
+          );
+          adapters.push({
+            name: nv?.name ?? desc,
+            vendor: /nvidia/i.test(desc) ? 'NVIDIA' : /amd|ati|radeon/i.test(desc) ? 'AMD' : /intel/i.test(desc) ? 'Intel' : 'Unknown',
+            driverVersion: nv?.driver ?? null,
+            driverDate: null,
+            vramMb: nv?.memTotalMb ?? null,
+            vramUsedMb: nv?.memUsedMb ?? null,
+            utilizationPercent: nv?.utilPct ?? null,
+            temperatureCelsius: nv?.tempC ?? drmTempC,
+            powerDrawWatts: nv?.powerW ?? null,
+            clockMhz: nv?.clockMhz ?? null,
+            resolution: null,
+            refreshHz: null,
+            status: 'OK',
+            errorCode: null,
+            errorDescription: null,
+            telemetrySource: nv ? 'lspci + nvidia-smi' : drmTempC !== null ? 'lspci + sysfs DRM' : 'lspci',
+          });
+        }
+      }
+    }
+  }
+
+  // If nvidia-smi found GPUs not matched by WMI/lspci, add them directly
+  if (adapters.length === 0 && nvidiaMetrics.size > 0) {
+    for (const nv of nvidiaMetrics.values()) {
+      adapters.push({
+        name: nv.name,
+        vendor: 'NVIDIA',
+        driverVersion: nv.driver,
+        driverDate: null,
+        vramMb: nv.memTotalMb,
+        vramUsedMb: nv.memUsedMb,
+        utilizationPercent: nv.utilPct,
+        temperatureCelsius: nv.tempC,
+        powerDrawWatts: nv.powerW,
+        clockMhz: nv.clockMhz,
+        resolution: null,
+        refreshHz: null,
+        status: 'OK',
+        errorCode: null,
+        errorDescription: null,
+        telemetrySource: 'nvidia-smi',
+      });
+    }
+  }
+
+  // Generate honest hardware warnings
+  for (const gpu of adapters) {
+    if (gpu.errorCode && gpu.errorCode !== 0) {
+      warnings.push({
+        code: gpu.errorCode === 43 ? 'GPU_CODE_43' : 'GPU_DRIVER_ERROR',
+        severity: gpu.errorCode === 43 || gpu.errorCode === 10 ? 'critical' : 'warning',
+        component: 'gpu',
+        title: `GPU Device Fault (${gpu.name})`,
+        detail: `${gpu.errorDescription ?? `Error code ${gpu.errorCode}`}`,
+      });
+    }
+    if (gpu.temperatureCelsius !== null && gpu.temperatureCelsius >= 84) {
+      warnings.push({
+        code: 'GPU_HIGH_TEMP',
+        severity: gpu.temperatureCelsius >= 92 ? 'critical' : 'warning',
+        component: 'thermal',
+        title: `Elevated GPU Temperature (${gpu.temperatureCelsius}°C)`,
+        detail: `${gpu.name} core sensor is reading ${gpu.temperatureCelsius}°C. Inspect GPU cooling fans, heatsink dust, and case airflow.`,
+      });
+    }
+    if (gpu.vramMb && gpu.vramUsedMb && gpu.vramUsedMb / gpu.vramMb >= 0.92) {
+      warnings.push({
+        code: 'GPU_VRAM_PRESSURE',
+        severity: 'warning',
+        component: 'gpu',
+        title: `High GPU VRAM Usage (${gpu.name})`,
+        detail: `${gpu.vramUsedMb} MB / ${gpu.vramMb} MB VRAM allocated (${Math.round((gpu.vramUsedMb / gpu.vramMb) * 100)}%).`,
+      });
+    }
+  }
+
+  if (adapters.length === 0) {
+    limitations.push('No discrete or integrated graphics adapter details were exposed in this host environment (headless container or restricted WMI/lspci).');
+  } else if (adapters.every((a) => a.temperatureCelsius === null)) {
+    limitations.push('Live GPU core temperature and clock sensors require vendor telemetry (such as NVIDIA NVML / nvidia-smi or Linux DRM hwmon); integrated GPUs often do not expose thermal counters to unprivileged user-mode queries.');
+  }
+
+  const primary = adapters[0];
+  const summary = primary
+    ? `Detected ${adapters.length} GPU adapter(s): ${primary.name}${primary.vramMb ? ` (${primary.vramMb} MB VRAM)` : ''}${primary.temperatureCelsius !== null ? `, ${primary.temperatureCelsius}°C` : ''}${primary.utilizationPercent !== null ? `, ${primary.utilizationPercent}% load` : ''}${primary.errorCode ? ` [ERROR CODE ${primary.errorCode}]` : ''}.`
+    : 'No GPU adapter telemetry was returned by the host OS.';
+
+  return {
+    id: crypto.randomUUID(),
+    toolId: 'gpu_diagnostics',
+    measurementType: 'measured',
+    source,
+    platform,
+    osVersion: `${os.type()} ${os.release()}`,
+    collectedAt: new Date().toISOString(),
+    durationMs: Date.now() - started,
+    summary,
+    limitations,
+    warnings,
+    data: {
+      adapterCount: adapters.length,
+      adapters,
+      hasLiveNvidiaSmi: nvidiaMetrics.size > 0,
+    },
+  };
+}
+
+export async function collectPeripheralsDiagnostics(): Promise<DiagnosticResult> {
+  const started = Date.now();
+  const platform = detectCurrentPlatform();
+  const warnings: DiagnosticWarning[] = [];
+  const limitations: string[] = [];
+  let source = `OS Peripheral & PnP Inspector (${platform})`;
+
+  const usbDevices: Array<{ name: string; status: string; instanceId?: string }> = [];
+  const bluetoothDevices: Array<{ name: string; status: string }> = [];
+  const audioEndpoints: Array<{ name: string; status: string }> = [];
+  const cameras: Array<{ name: string; status: string }> = [];
+  const monitors: Array<{ name: string; status: string }> = [];
+  const faultedDevices: Array<{
+    name: string;
+    deviceClass: string;
+    status: string;
+    errorCode: number;
+    errorDescription: string;
+    instanceId: string;
+  }> = [];
+
+  if (platform === 'windows') {
+    source = 'Windows PnP Device Manager CIM/Get-PnpDevice (Read-Only)';
+    const winPnp = await runPowershellJson<{
+      usb?: Array<{ FriendlyName?: string; Name?: string; Status?: string; InstanceId?: string }>;
+      bluetooth?: Array<{ FriendlyName?: string; Name?: string; Status?: string }>;
+      audio?: Array<{ FriendlyName?: string; Name?: string; Status?: string }>;
+      camera?: Array<{ FriendlyName?: string; Name?: string; Status?: string }>;
+      monitor?: Array<{ FriendlyName?: string; Name?: string; Status?: string }>;
+      faults?: Array<{ Name?: string; PNPClass?: string; Status?: string; ConfigManagerErrorCode?: number; DeviceID?: string }>;
+    }>(`
+      $usb = Get-PnpDevice -Class USB, USBDevice -PresentOnly -ErrorAction SilentlyContinue | Select-Object -First 25 FriendlyName, Name, Status, InstanceId
+      $bt = Get-PnpDevice -Class Bluetooth -PresentOnly -ErrorAction SilentlyContinue | Select-Object -First 20 FriendlyName, Name, Status
+      $aud = Get-PnpDevice -Class AudioEndpoint, MEDIA -PresentOnly -ErrorAction SilentlyContinue | Select-Object -First 20 FriendlyName, Name, Status
+      $cam = Get-PnpDevice -Class Camera, Image -PresentOnly -ErrorAction SilentlyContinue | Select-Object -First 10 FriendlyName, Name, Status
+      $mon = Get-PnpDevice -Class Monitor -PresentOnly -ErrorAction SilentlyContinue | Select-Object -First 10 FriendlyName, Name, Status
+      $faults = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.ConfigManagerErrorCode -ne 0 -and $_.ConfigManagerErrorCode -ne $null } | Select-Object -First 20 Name, PNPClass, Status, ConfigManagerErrorCode, DeviceID
+      @{ usb = $usb; bluetooth = $bt; audio = $aud; camera = $cam; monitor = $mon; faults = $faults } | ConvertTo-Json -Depth 4
+    `, 10000);
+
+    if (winPnp) {
+      for (const u of normalizeArray(winPnp.usb)) {
+        usbDevices.push({
+          name: String(u.FriendlyName || u.Name || 'USB Device'),
+          status: String(u.Status || 'OK'),
+          instanceId: normalizePnpDeviceId(u.InstanceId),
+        });
+      }
+      for (const b of normalizeArray(winPnp.bluetooth)) {
+        bluetoothDevices.push({
+          name: String(b.FriendlyName || b.Name || 'Bluetooth Device'),
+          status: String(b.Status || 'OK'),
+        });
+      }
+      for (const a of normalizeArray(winPnp.audio)) {
+        audioEndpoints.push({
+          name: String(a.FriendlyName || a.Name || 'Audio Endpoint'),
+          status: String(a.Status || 'OK'),
+        });
+      }
+      for (const c of normalizeArray(winPnp.camera)) {
+        cameras.push({
+          name: String(c.FriendlyName || c.Name || 'Camera'),
+          status: String(c.Status || 'OK'),
+        });
+      }
+      for (const m of normalizeArray(winPnp.monitor)) {
+        monitors.push({
+          name: String(m.FriendlyName || m.Name || 'Display Monitor'),
+          status: String(m.Status || 'OK'),
+        });
+      }
+      for (const f of normalizeArray(winPnp.faults)) {
+        const code = Number(f.ConfigManagerErrorCode || 0);
+        if (code !== 0 && code !== 22) {
+          // Code 22 is intentionally disabled by user; include it in list but don't mark critical unless other error
+          faultedDevices.push({
+            name: String(f.Name || 'Unknown Device'),
+            deviceClass: String(f.PNPClass || 'Hardware'),
+            status: String(f.Status || 'Error'),
+            errorCode: code,
+            errorDescription: describePnpError(code),
+            instanceId: normalizePnpDeviceId(f.DeviceID),
+          });
+        } else if (code === 22) {
+          faultedDevices.push({
+            name: String(f.Name || 'Disabled Device'),
+            deviceClass: String(f.PNPClass || 'Hardware'),
+            status: 'Disabled',
+            errorCode: code,
+            errorDescription: describePnpError(code),
+            instanceId: normalizePnpDeviceId(f.DeviceID),
+          });
+        }
+      }
+    } else {
+      limitations.push('Windows PnP device enumeration timed out or was restricted by system policy.');
+    }
+  } else if (platform === 'macos') {
+    source = 'macOS system_profiler (USB / Bluetooth / Audio)';
+    const res = await runFixedCommand('system_profiler', ['SPUSBDataType', 'SPBluetoothDataType', 'SPAudioDataType', '-json'], 7000);
+    if (res?.stdout) {
+      try {
+        const parsed = JSON.parse(res.stdout) as {
+          SPUSBDataType?: Array<{ _name?: string; _items?: Array<{ _name?: string }> }>;
+          SPBluetoothDataType?: Array<Record<string, unknown>>;
+          SPAudioDataType?: Array<{ _items?: Array<{ _name?: string }> }>;
+        };
+        const walkUsb = (items: Array<{ _name?: string; _items?: Array<{ _name?: string }> }>) => {
+          for (const item of items) {
+            if (item._name) usbDevices.push({ name: item._name, status: 'OK' });
+            if (Array.isArray(item._items)) walkUsb(item._items);
+          }
+        };
+        walkUsb(parsed.SPUSBDataType ?? []);
+        for (const a of parsed.SPAudioDataType ?? []) {
+          for (const item of a._items ?? []) {
+            if (item._name) audioEndpoints.push({ name: item._name, status: 'OK' });
+          }
+        }
+        if (parsed.SPBluetoothDataType?.length) {
+          bluetoothDevices.push({ name: 'Mac Bluetooth Controller', status: 'OK' });
+        }
+      } catch {
+        limitations.push('Unable to parse macOS peripheral profile JSON.');
+      }
+    }
+  } else {
+    source = 'Linux lsusb / sysfs Bluetooth / ALSA (Read-Only)';
+    const lsusb = await runFixedCommand('lsusb', [], 4000);
+    if (lsusb?.stdout) {
+      for (const line of lsusb.stdout.split('\n').filter(Boolean).slice(0, 25)) {
+        const name = line.replace(/^Bus\s+\d+\s+Device\s+\d+:\s+ID\s+[0-9a-f:]+\s*/i, '').trim() || line;
+        usbDevices.push({ name, status: 'OK' });
+      }
+    } else {
+      limitations.push('lsusb is not installed or USB sysfs access is restricted in this Linux environment.');
+    }
+    try {
+      if (fs.existsSync('/sys/class/bluetooth')) {
+        for (const hci of fs.readdirSync('/sys/class/bluetooth')) {
+          bluetoothDevices.push({ name: `Bluetooth Controller (${hci})`, status: 'OK' });
+        }
+      }
+    } catch {
+      // ignore
+    }
+    const aplay = await runFixedCommand('aplay', ['-l'], 3000);
+    if (aplay?.stdout) {
+      for (const line of aplay.stdout.split('\n').filter((l) => l.startsWith('card '))) {
+        audioEndpoints.push({ name: line.trim(), status: 'OK' });
+      }
+    }
+  }
+
+  const activeFaults = faultedDevices.filter((f) => f.errorCode !== 22);
+  for (const fault of activeFaults.slice(0, 6)) {
+    const cls = fault.deviceClass.toLowerCase();
+    const comp: DiagnosticWarning['component'] = cls.includes('usb')
+      ? 'usb'
+      : cls.includes('bluetooth')
+        ? 'bluetooth'
+        : cls.includes('audio') || cls.includes('media')
+          ? 'audio'
+          : cls.includes('display')
+            ? 'gpu'
+            : 'peripherals';
+    warnings.push({
+      code: `PNP_ERROR_CODE_${fault.errorCode}`,
+      severity: fault.errorCode === 43 || fault.errorCode === 10 ? 'critical' : 'warning',
+      component: comp,
+      title: `Device Fault: ${fault.name} (Code ${fault.errorCode})`,
+      detail: fault.errorDescription,
+    });
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    toolId: 'peripherals_diagnostics',
+    measurementType: 'measured',
+    source,
+    platform,
+    osVersion: `${os.type()} ${os.release()}`,
+    collectedAt: new Date().toISOString(),
+    durationMs: Date.now() - started,
+    summary: `Enumerated ${usbDevices.length} USB, ${bluetoothDevices.length} Bluetooth, ${audioEndpoints.length} audio, ${cameras.length} camera, and ${monitors.length} monitor device(s); ${activeFaults.length} active PnP fault(s).`,
+    limitations,
+    warnings,
+    data: {
+      counts: {
+        usb: usbDevices.length,
+        bluetooth: bluetoothDevices.length,
+        audio: audioEndpoints.length,
+        cameras: cameras.length,
+        monitors: monitors.length,
+        faultedDevices: activeFaults.length,
+      },
+      usbDevices: usbDevices.slice(0, 25),
+      bluetoothDevices: bluetoothDevices.slice(0, 20),
+      audioEndpoints: audioEndpoints.slice(0, 20),
+      cameras: cameras.slice(0, 10),
+      monitors: monitors.slice(0, 10),
+      faultedDevices,
+    },
+  };
+}
+
+export async function collectHardwareStressProbe(): Promise<DiagnosticResult> {
+  const started = Date.now();
+  const platform = detectCurrentPlatform();
+  const warnings: DiagnosticWarning[] = [];
+  const limitations: string[] = [];
+
+  // 1. Bounded 4 x 650ms CPU Compute Stability & Thermal-Throttling Probe
+  const windows: Array<{ windowIndex: number; durationMs: number; kOpsPerSec: number }> = [];
+  const windowTargetMs = 650;
+  let checksumSink = 0;
+
+  for (let w = 0; w < 4; w++) {
+    const t0 = performance.now();
+    let ops = 0;
+    while (performance.now() - t0 < windowTargetMs) {
+      // Deterministic prime + floating-point trig batch (1,000 inner ops per iteration)
+      let acc = 0;
+      for (let i = 1; i <= 400; i++) {
+        const x = (i + ops) * 0.00137;
+        acc += Math.sin(x) * Math.cos(x) + Math.sqrt(i + 1.5);
+      }
+      checksumSink += acc > 0 ? 1 : 0;
+      ops += 1;
+    }
+    const elapsed = Math.max(1, performance.now() - t0);
+    const kOpsPerSec = Math.round(((ops * 400) / elapsed) * 10) / 10; // kilo-ops/sec
+    windows.push({
+      windowIndex: w + 1,
+      durationMs: Math.round(elapsed),
+      kOpsPerSec,
+    });
+    // Yield briefly to avoid starving event loop
+    await new Promise((r) => setTimeout(r, 40));
+  }
+
+  const scores = windows.map((w) => w.kOpsPerSec);
+  const peakKOps = Math.max(...scores);
+  const sustainedKOps = scores[scores.length - 1] ?? peakKOps;
+  const avgKOps = Math.round((scores.reduce((a, b) => a + b, 0) / Math.max(1, scores.length)) * 10) / 10;
+  const throttleDropPercent =
+    peakKOps > 0 ? Math.max(0, Math.round(((peakKOps - sustainedKOps) / peakKOps) * 1000) / 10) : 0;
+  const stabilityPercent = Math.max(0, Math.min(100, Math.round((100 - throttleDropPercent) * 10) / 10));
+
+  if (throttleDropPercent >= 22) {
+    warnings.push({
+      code: 'CPU_THROTTLING_DETECTED',
+      severity: throttleDropPercent >= 32 ? 'critical' : 'warning',
+      component: 'thermal',
+      title: `CPU Compute Throughput Dropped ${throttleDropPercent}%`,
+      detail: `Single-thread compute throughput fell from ${peakKOps} kOps/s peak to ${sustainedKOps} kOps/s across the 4-window probe. This may indicate thermal throttling, power-plan capping, or heavy background contention.`,
+    });
+  }
+
+  // 2. Bounded Self-Cleaning 16 MB Sequential Temp-File Disk I/O Benchmark
+  let diskWriteMBps: number | null = null;
+  let diskReadMBps: number | null = null;
+  const testBytes = 16 * 1024 * 1024;
+  const tmpFile = path.join(os.tmpdir(), `coresense-io-bench-${crypto.randomUUID()}.tmp`);
+
+  try {
+    const payload = crypto.randomBytes(testBytes);
+    const wStart = performance.now();
+    const fd = fs.openSync(tmpFile, 'w');
+    try {
+      fs.writeSync(fd, payload, 0, payload.length, 0);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const wSec = Math.max(0.001, (performance.now() - wStart) / 1000);
+    diskWriteMBps = Math.round((16 / wSec) * 10) / 10;
+
+    const rStart = performance.now();
+    const readBuf = fs.readFileSync(tmpFile);
+    const rSec = Math.max(0.001, (performance.now() - rStart) / 1000);
+    if (readBuf.length === testBytes) {
+      diskReadMBps = Math.round((16 / rSec) * 10) / 10;
+    }
+
+    if (diskWriteMBps < 35) {
+      warnings.push({
+        code: 'SLOW_DISK_WRITE',
+        severity: 'warning',
+        component: 'storage',
+        title: `Slow Sequential Disk Write (${diskWriteMBps} MB/s)`,
+        detail: `16 MB flushed write to ${os.tmpdir()} measured ${diskWriteMBps} MB/s. Check drive health, full SSD SLC cache, or SATA/HDD bottleneck.`,
+      });
+    }
+  } catch {
+    limitations.push('Temp-directory sequential disk I/O test could not run due to filesystem permission or space limits.');
+  } finally {
+    try {
+      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    } catch {
+      // ignore cleanup error
+    }
+  }
+
+  limitations.push('This probe is strictly bounded (~3s single-thread CPU + 16 MB fsync temp file) so it remains safe and non-disruptive; OS page cache can boost sequential read speed.');
+
+  return {
+    id: crypto.randomUUID(),
+    toolId: 'hardware_stress_probe',
+    measurementType: 'measured',
+    source: `CoreSense Bounded Hardware Benchmark (${platform})`,
+    platform,
+    osVersion: `${os.type()} ${os.release()}`,
+    collectedAt: new Date().toISOString(),
+    durationMs: Date.now() - started,
+    summary: `Stress probe complete: CPU ${avgKOps} kOps/s avg (${stabilityPercent}% stability, ${throttleDropPercent}% drop); Disk ${diskWriteMBps ?? 'N/A'} MB/s write / ${diskReadMBps ?? 'N/A'} MB/s read.`,
+    limitations,
+    warnings,
+    data: {
+      checksumGuard: checksumSink > 0,
+      cpuBenchmark: {
+        logicalThreads: os.cpus().length,
+        cpuModel: os.cpus()[0]?.model?.trim() || 'Unknown CPU',
+        peakKOpsPerSec: peakKOps,
+        sustainedKOpsPerSec: sustainedKOps,
+        averageKOpsPerSec: avgKOps,
+        throttleDropPercent,
+        stabilityPercent,
+        windows,
+      },
+      diskBenchmark: {
+        sampleSizeMb: 16,
+        targetDir: os.tmpdir(),
+        sequentialWriteMBps: diskWriteMBps,
+        sequentialReadMBps: diskReadMBps,
+      },
+    },
+  };
+}
+
 export async function runFullSystemSnapshot(): Promise<DiagnosticResult> {
   const started = Date.now();
-  const [cpu, memory, storage, network, osHealth, power] = await Promise.all([
+  const [cpu, memory, storage, gpu, network, peripherals, osHealth, power] = await Promise.all([
     collectCpuDiagnostics(),
     collectMemoryDiagnostics(),
     collectStorageDiagnostics(),
+    collectGpuDiagnostics(),
     collectNetworkDiagnostics(),
+    collectPeripheralsDiagnostics(),
     collectOsHealthDiagnostics(),
     collectPowerAndPeripherals(),
   ]);
@@ -936,7 +1631,9 @@ export async function runFullSystemSnapshot(): Promise<DiagnosticResult> {
     ...cpu.warnings,
     ...memory.warnings,
     ...storage.warnings,
+    ...gpu.warnings,
     ...network.warnings,
+    ...peripherals.warnings,
     ...osHealth.warnings,
     ...power.warnings,
   ];
@@ -945,7 +1642,9 @@ export async function runFullSystemSnapshot(): Promise<DiagnosticResult> {
       ...cpu.limitations,
       ...memory.limitations,
       ...storage.limitations,
+      ...gpu.limitations,
       ...network.limitations,
+      ...peripherals.limitations,
       ...osHealth.limitations,
       ...power.limitations,
     ]),
@@ -960,14 +1659,16 @@ export async function runFullSystemSnapshot(): Promise<DiagnosticResult> {
     osVersion: osHealth.osVersion,
     collectedAt: new Date().toISOString(),
     durationMs: Date.now() - started,
-    summary: `Full system diagnostic completed: CPU ${String(cpu.data.utilizationPercent)}%, RAM ${String(memory.data.utilizationPercent)}%, ${warnings.length} alert(s) identified.`,
+    summary: `Full system diagnostic completed: CPU ${String(cpu.data.utilizationPercent)}%, RAM ${String(memory.data.utilizationPercent)}%, ${String(gpu.data.adapterCount ?? 0)} GPU(s), ${String((peripherals.data.counts as Record<string, number> | undefined)?.faultedDevices ?? 0)} PnP fault(s), ${warnings.length} alert(s) identified.`,
     limitations,
     warnings,
     data: {
       cpu: cpu.data,
       memory: memory.data,
       storage: storage.data,
+      gpu: gpu.data,
       network: network.data,
+      peripherals: peripherals.data,
       osHealth: osHealth.data,
       power: power.data,
     },
@@ -1038,8 +1739,14 @@ export async function executeValidatedDiagnosticTool(
       return collectMemoryDiagnostics(parsedParams);
     case 'storage_diagnostics':
       return collectStorageDiagnostics();
+    case 'gpu_diagnostics':
+      return collectGpuDiagnostics();
     case 'network_diagnostics':
       return collectNetworkDiagnostics(parsedParams);
+    case 'peripherals_diagnostics':
+      return collectPeripheralsDiagnostics();
+    case 'hardware_stress_probe':
+      return collectHardwareStressProbe();
     case 'os_health_diagnostics':
       return collectOsHealthDiagnostics(parsedParams);
     case 'power_and_peripherals':

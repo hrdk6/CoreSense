@@ -4,6 +4,7 @@ import {
   BookOpen,
   CheckCircle2,
   ClipboardPlus,
+  Cpu,
   Download,
   FileCheck2,
   Image as ImageIcon,
@@ -18,9 +19,10 @@ import {
   Trash2,
   Volume2,
   VolumeX,
+  Wrench,
   X,
 } from 'lucide-react';
-import type { EvidenceItem, Hypothesis, VerificationReport } from '@coresense/shared';
+import type { EvidenceItem, Hypothesis, StructuredPcbInspection, VerificationReport } from '@coresense/shared';
 import { apiRequest } from '../api';
 import { MarkdownBlock } from './MarkdownBlock';
 
@@ -64,6 +66,7 @@ interface MessageItem {
   content: string;
   inputModality: string;
   attachments: Array<{ id: string; filename: string; clarityNote: string }>;
+  structuredInspection?: StructuredPcbInspection | null;
   citations: Array<{ documentTitle: string; pageNumber: number; sectionHeading: string; excerpt: string }>;
   toolCalls: ProposedTool[];
   aiProvider?: string | null;
@@ -711,6 +714,129 @@ export const CopilotView: React.FC<{
                   ) : (
                     <article className="w-full rounded-lg bg-[var(--cs-surface)] border border-[var(--cs-border)] border-l-[3px] border-l-[var(--cs-accent)] px-4 py-3.5 space-y-3">
                       <MarkdownBlock content={m.content} />
+
+                      {m.structuredInspection && (
+                        <div className="pt-3 border-t border-[var(--cs-border)] space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <Cpu className="h-4 w-4 text-[var(--cs-accent)] shrink-0" />
+                              <span className="cs-heading text-xs font-bold text-[var(--cs-ink)]">
+                                Structured PCB / Hardware Vision Inspection
+                              </span>
+                              <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--cs-well)] border border-[var(--cs-border)] text-[var(--cs-ink-2)]">
+                                {m.structuredInspection.analysisMode.replace(/_/g, ' ')}
+                              </span>
+                            </div>
+                            <span
+                              className={`font-mono text-[10px] px-2 py-0.5 rounded border uppercase font-semibold ${
+                                m.structuredInspection.imageClarity === 'clear'
+                                  ? 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                                  : m.structuredInspection.imageClarity === 'moderate'
+                                    ? 'bg-[var(--cs-warn-soft)] border-[var(--cs-warn-border)] text-[var(--cs-warn-ink)]'
+                                    : 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                              }`}
+                            >
+                              Clarity: {m.structuredInspection.imageClarity.replace(/_/g, ' ')}
+                            </span>
+                          </div>
+
+                          <div className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] px-3 py-2 text-xs space-y-1">
+                            <div className="font-semibold text-[var(--cs-ink)]">
+                              {m.structuredInspection.boardOrDeviceType}
+                            </div>
+                            <p className="text-[var(--cs-ink-2)] leading-relaxed">
+                              {m.structuredInspection.clarityNotes}
+                            </p>
+                          </div>
+
+                          {m.structuredInspection.identifiedComponents.length > 0 && (
+                            <div className="overflow-x-auto rounded-md border border-[var(--cs-border)] bg-[var(--cs-canvas)]">
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-left text-[11px] text-[var(--cs-ink-muted)] border-b border-[var(--cs-border)] bg-[var(--cs-chassis)]">
+                                    <th className="px-2.5 py-2 font-medium">Designator</th>
+                                    <th className="px-2.5 py-2 font-medium">Component</th>
+                                    <th className="px-2.5 py-2 font-medium">Region</th>
+                                    <th className="px-2.5 py-2 font-medium">Visual condition</th>
+                                    <th className="px-2.5 py-2 font-medium">Visual observation</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-[var(--cs-border)]">
+                                  {m.structuredInspection.identifiedComponents.map((comp, idx) => (
+                                    <tr key={idx} className="text-[var(--cs-ink-2)]">
+                                      <td className="px-2.5 py-2 font-mono font-semibold text-[var(--cs-ink)] whitespace-nowrap">
+                                        {comp.designator}
+                                      </td>
+                                      <td className="px-2.5 py-2 whitespace-nowrap">
+                                        <div className="text-[var(--cs-ink)] font-medium">{comp.componentType}</div>
+                                        <div className="text-[10px] text-[var(--cs-ink-muted)]">{comp.functionSummary}</div>
+                                      </td>
+                                      <td className="px-2.5 py-2 text-[11px] text-[var(--cs-ink-muted)] whitespace-nowrap">
+                                        {comp.region}
+                                      </td>
+                                      <td className="px-2.5 py-2 whitespace-nowrap">
+                                        <span
+                                          className={`inline-block font-mono text-[10px] px-1.5 py-0.5 rounded border ${
+                                            comp.visualCondition === 'normal'
+                                              ? 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                                              : comp.visualCondition === 'unreadable'
+                                                ? 'bg-[var(--cs-well)] border-[var(--cs-border)] text-[var(--cs-ink-muted)]'
+                                                : 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                                          }`}
+                                        >
+                                          {comp.visualCondition.replace(/_/g, ' ')}
+                                        </span>
+                                      </td>
+                                      <td className="px-2.5 py-2 text-[11px] leading-snug">{comp.visualEvidence}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+
+                          {m.structuredInspection.electricalTestsRequired.length > 0 && (
+                            <div className="space-y-1.5">
+                              <div className="text-xs font-semibold text-[var(--cs-ink)] flex items-center gap-1.5">
+                                <Wrench className="h-3.5 w-3.5 text-[var(--cs-accent)]" />
+                                <span>Required electrical confirmation tests (multimeter / bench)</span>
+                              </div>
+                              {m.structuredInspection.electricalTestsRequired.map((test, idx) => (
+                                <div
+                                  key={idx}
+                                  className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5 flex items-start justify-between gap-3 text-xs"
+                                >
+                                  <div className="space-y-0.5 min-w-0">
+                                    <div className="font-semibold text-[var(--cs-ink)]">{test.target}</div>
+                                    <div className="text-[var(--cs-ink-2)]">{test.testMethod}</div>
+                                    <div className="font-mono text-[11px] text-[var(--cs-ink-muted)]">
+                                      Expected: {test.expectedBaseline}
+                                    </div>
+                                    <div className="text-[11px] text-[var(--cs-warn-ink)]">
+                                      Safety: {test.safetyNote}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setMeasTitle(test.target);
+                                      setMeasValue('');
+                                      setMeasurementModal(true);
+                                    }}
+                                    className="cs-btn-secondary shrink-0 px-2.5 py-1.5 text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    Log reading
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="rounded-md bg-[var(--cs-warn-soft)] border border-[var(--cs-warn-border)] px-3 py-2 text-[11px] text-[var(--cs-warn-ink)] leading-snug">
+                            <strong>Visual vs electrical boundary:</strong> {m.structuredInspection.disclaimer}
+                          </div>
+                        </div>
+                      )}
 
                       {m.citations?.length > 0 && (
                         <div className="pt-3 border-t border-[var(--cs-border)] space-y-1.5">

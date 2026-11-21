@@ -3,19 +3,24 @@ import {
   Activity,
   AlertTriangle,
   BatteryCharging,
+  BrainCircuit,
   Cpu,
+  Flame,
   FlaskConical,
   HardDrive,
   Info,
   MemoryStick,
+  Monitor,
   Play,
   RefreshCw,
   ShieldCheck,
   Terminal,
+  TrendingUp,
+  Usb,
   Wifi,
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import type { DiagnosticResult } from '@coresense/shared';
+import type { DiagnosticResult, SystemHealthAnalysis } from '@coresense/shared';
 import { apiRequest, isTauriRuntime, runNativeTauriDiagnostic } from '../api';
 
 const TOOL_CARDS = [
@@ -23,9 +28,12 @@ const TOOL_CARDS = [
   { id: 'cpu_diagnostics', label: 'CPU & processes', icon: Cpu },
   { id: 'memory_diagnostics', label: 'RAM pressure', icon: MemoryStick },
   { id: 'storage_diagnostics', label: 'Storage & SMART', icon: HardDrive },
+  { id: 'gpu_diagnostics', label: 'GPU & drivers', icon: Monitor },
   { id: 'network_diagnostics', label: 'Network & DNS', icon: Wifi },
+  { id: 'peripherals_diagnostics', label: 'USB / BT / Audio', icon: Usb },
   { id: 'os_health_diagnostics', label: 'OS event logs', icon: Terminal },
-  { id: 'power_and_peripherals', label: 'Battery & displays', icon: BatteryCharging },
+  { id: 'power_and_peripherals', label: 'Battery & power', icon: BatteryCharging },
+  { id: 'hardware_stress_probe', label: 'Stress benchmark', icon: Flame },
 ] as const;
 
 const SIMULATIONS = [
@@ -102,6 +110,7 @@ const TelemetryGauge: React.FC<{
 
 export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: string }> }> = ({ devices }) => {
   const [history, setHistory] = useState<DiagnosticResult[]>([]);
+  const [healthAnalysis, setHealthAnalysis] = useState<SystemHealthAnalysis | null>(null);
   const [active, setActive] = useState<DiagnosticResult | null>(null);
   const [compareBaselineId, setCompareBaselineId] = useState<string>('');
   const [runningTool, setRunningTool] = useState<string | null>(null);
@@ -109,15 +118,22 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
   const [showSimDrawer, setShowSimDrawer] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadHistory = async () => {
-    const res = await apiRequest<{ snapshots: DiagnosticResult[] }>('/api/v1/diagnostics/history?limit=25');
-    setHistory(res.snapshots);
-    if (!active && res.snapshots.length > 0) setActive(res.snapshots[0]);
+  const loadHistory = async (targetDevId = selectedDeviceId) => {
+    const devParam = targetDevId ? `&deviceId=${encodeURIComponent(targetDevId)}` : '';
+    const [histRes, mlRes] = await Promise.all([
+      apiRequest<{ snapshots: DiagnosticResult[] }>(`/api/v1/diagnostics/history?limit=25${devParam}`),
+      apiRequest<{ analysis: SystemHealthAnalysis }>(
+        `/api/v1/diagnostics/health-analysis${targetDevId ? `?deviceId=${encodeURIComponent(targetDevId)}` : ''}`,
+      ).catch(() => ({ analysis: null })),
+    ]);
+    setHistory(histRes.snapshots);
+    setHealthAnalysis(mlRes.analysis);
+    if (!active && histRes.snapshots.length > 0) setActive(histRes.snapshots[0]);
   };
 
   useEffect(() => {
-    loadHistory().catch(() => {});
-  }, []);
+    loadHistory(selectedDeviceId).catch(() => {});
+  }, [selectedDeviceId]);
 
   const runTool = async (toolId: string) => {
     setRunningTool(toolId);
@@ -129,7 +145,10 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
           'cpu_diagnostics',
           'memory_diagnostics',
           'storage_diagnostics',
+          'gpu_diagnostics',
           'network_diagnostics',
+          'peripherals_diagnostics',
+          'hardware_stress_probe',
           'os_health_diagnostics',
           'power_and_peripherals',
           'full_system_snapshot',
@@ -142,7 +161,7 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
             body: { snapshot: nativeRes, deviceId: selectedDeviceId || undefined },
           });
           setActive(ingested.snapshot);
-          await loadHistory();
+          await loadHistory(selectedDeviceId);
           return;
         }
       }
@@ -152,7 +171,7 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
         body: { toolId, deviceId: selectedDeviceId || undefined },
       });
       setActive(res.snapshot);
-      await loadHistory();
+      await loadHistory(selectedDeviceId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Diagnostic scan failed.');
     } finally {
@@ -183,12 +202,23 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
     (active?.toolId === 'memory_diagnostics' ? active.data : null)) as Record<string, unknown> | null;
   const storageObj = ((active?.data?.storage as Record<string, unknown>) ||
     (active?.toolId === 'storage_diagnostics' ? active.data : null)) as Record<string, unknown> | null;
+  const gpuObj = ((active?.data?.gpu as Record<string, unknown>) ||
+    (active?.toolId === 'gpu_diagnostics' ? active.data : null)) as Record<string, unknown> | null;
   const netObj = ((active?.data?.network as Record<string, unknown>) ||
     (active?.toolId === 'network_diagnostics' ? active.data : null)) as Record<string, unknown> | null;
+  const peripObj = ((active?.data?.peripherals as Record<string, unknown>) ||
+    (active?.toolId === 'peripherals_diagnostics' ? active.data : null)) as Record<string, unknown> | null;
+  const stressObj = (active?.toolId === 'hardware_stress_probe' ? active.data : null) as Record<string, unknown> | null;
   const osObj = ((active?.data?.osHealth as Record<string, unknown>) ||
     (active?.toolId === 'os_health_diagnostics' ? active.data : null)) as Record<string, unknown> | null;
   const powerObj = ((active?.data?.power as Record<string, unknown>) ||
     (active?.toolId === 'power_and_peripherals' ? active.data : null)) as Record<string, unknown> | null;
+
+  const stressWindowsChart = Array.isArray((stressObj?.cpuBenchmark as Record<string, unknown> | undefined)?.windows)
+    ? ((stressObj?.cpuBenchmark as Record<string, unknown>).windows as Array<{ windowIndex: number; kOpsPerSec: number }>).map(
+        (w) => ({ window: `W${w.windowIndex}`, kOps: w.kOpsPerSec }),
+      )
+    : [];
 
   const perCoreChartData = Array.isArray(cpuObj?.perCorePercent)
     ? (cpuObj.perCorePercent as number[]).map((v, i) => ({ core: `T${i}`, load: v }))
@@ -283,7 +313,7 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
       </div>
 
       {/* Individual Read-Only Probe Strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-10 gap-2">
         {TOOL_CARDS.map((t) => {
           const Icon = t.icon;
           const busy = runningTool === t.id;
@@ -349,6 +379,175 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
         <div className="rounded-lg border border-[var(--cs-danger-border)] bg-[var(--cs-danger-soft)] px-4 py-2.5 text-xs text-[var(--cs-danger-ink)]">
           {error}
         </div>
+      )}
+
+      {/* Predictive Telemetry ML Anomaly & Degradation Intelligence Deck */}
+      {healthAnalysis && (
+        <section className="cs-panel p-4 space-y-3.5 border-l-[4px] border-l-[var(--cs-accent)]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="h-8 w-8 rounded-lg bg-[var(--cs-accent-soft)] border border-[var(--cs-accent-border)] flex items-center justify-center shrink-0">
+                <BrainCircuit className="h-4 w-4 text-[var(--cs-accent)]" />
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="cs-heading text-sm font-bold text-[var(--cs-ink)]">
+                    Predictive ML Telemetry Intelligence
+                  </h2>
+                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--cs-well)] border border-[var(--cs-border)] text-[var(--cs-ink-2)]">
+                    MAD Z-Score + OLS Regression
+                  </span>
+                </div>
+                <p className="text-[11px] text-[var(--cs-ink-muted)]">
+                  {healthAnalysis.realSnapshotsAnalyzed} measured snapshot(s) analyzed
+                  {healthAnalysis.baselineReady
+                    ? ' • Statistical baseline active'
+                    : ` • Baseline collecting (${healthAnalysis.realSnapshotsAnalyzed}/4 scans)`}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2.5">
+              <div className="text-right">
+                <div className="text-[10px] uppercase tracking-wider text-[var(--cs-ink-muted)] font-semibold">
+                  Composite health
+                </div>
+                <div className="font-mono text-lg font-bold cs-tabular text-[var(--cs-ink)]">
+                  {healthAnalysis.overallHealthScore !== null ? `${healthAnalysis.overallHealthScore} / 100` : 'No data'}
+                </div>
+              </div>
+              <span
+                className={`px-2.5 py-1 rounded text-[11px] font-mono font-semibold border uppercase ${
+                  healthAnalysis.overallStatus === 'critical'
+                    ? 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                    : healthAnalysis.overallStatus === 'degraded' || healthAnalysis.overallStatus === 'attention'
+                      ? 'bg-[var(--cs-warn-soft)] border-[var(--cs-warn-border)] text-[var(--cs-warn-ink)]'
+                      : healthAnalysis.overallStatus === 'healthy'
+                        ? 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                        : 'bg-[var(--cs-well)] border-[var(--cs-border)] text-[var(--cs-ink-muted)]'
+                }`}
+              >
+                {healthAnalysis.overallStatus.replace(/_/g, ' ')}
+              </span>
+            </div>
+          </div>
+
+          {/* 8-Subsystem Score Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+            {healthAnalysis.subsystemScores.map((sub) => (
+              <div
+                key={sub.subsystem}
+                title={sub.factors.join('\n')}
+                className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] px-2.5 py-2 space-y-1"
+              >
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="font-semibold uppercase text-[var(--cs-ink-muted)]">{sub.subsystem}</span>
+                  <span
+                    className={`font-mono font-bold cs-tabular ${
+                      sub.score === null
+                        ? 'text-[var(--cs-ink-muted)]'
+                        : sub.score >= 85
+                          ? 'text-[var(--cs-ok-ink)]'
+                          : sub.score >= 70
+                            ? 'text-[var(--cs-warn-ink)]'
+                            : 'text-[var(--cs-danger-ink)]'
+                    }`}
+                  >
+                    {sub.score !== null ? sub.score : '—'}
+                  </span>
+                </div>
+                <div className="w-full h-1.5 rounded-sm bg-[var(--cs-well)] overflow-hidden">
+                  <div
+                    className="h-full"
+                    style={{
+                      width: `${sub.score ?? 0}%`,
+                      backgroundColor:
+                        sub.score === null
+                          ? 'transparent'
+                          : sub.score >= 85
+                            ? 'var(--cs-ok)'
+                            : sub.score >= 70
+                              ? 'var(--cs-warn)'
+                              : 'var(--cs-danger)',
+                    }}
+                  />
+                </div>
+                <div className="text-[10px] text-[var(--cs-ink-muted)] truncate">{sub.latestSummary}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Detected Z-Score Anomalies & OLS Degradation Forecasts */}
+          {(healthAnalysis.anomalies.length > 0 || healthAnalysis.forecasts.length > 0) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+              {healthAnalysis.anomalies.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-xs font-semibold text-[var(--cs-ink)] flex items-center gap-1.5">
+                    <AlertTriangle className="h-3.5 w-3.5 text-[var(--cs-warn)]" />
+                    <span>Statistical anomalies (Modified Z-Score)</span>
+                  </div>
+                  {healthAnalysis.anomalies.map((anom) => (
+                    <div
+                      key={anom.id}
+                      className={`rounded-md px-3 py-2 text-xs border ${
+                        anom.severity === 'critical'
+                          ? 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                          : 'bg-[var(--cs-warn-soft)] border-[var(--cs-warn-border)] text-[var(--cs-warn-ink)]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between font-mono text-[11px] font-semibold">
+                        <span>{anom.metric}</span>
+                        <span>Z = {anom.zScore > 0 ? `+${anom.zScore}` : anom.zScore}</span>
+                      </div>
+                      <p className="mt-0.5 opacity-95">{anom.explanation}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {healthAnalysis.forecasts.length > 0 && (
+                <div className={`space-y-1.5 ${healthAnalysis.anomalies.length === 0 ? 'md:col-span-2' : ''}`}>
+                  <div className="text-xs font-semibold text-[var(--cs-ink)] flex items-center gap-1.5">
+                    <TrendingUp className="h-3.5 w-3.5 text-[var(--cs-accent)]" />
+                    <span>Predictive degradation forecasts (OLS regression)</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {healthAnalysis.forecasts.map((fc) => (
+                      <div
+                        key={fc.metric}
+                        className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5 text-xs space-y-1"
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="font-semibold text-[var(--cs-ink)] truncate">{fc.metric}</span>
+                          <span
+                            className={`font-mono text-[10px] px-1.5 py-0.5 rounded border uppercase shrink-0 ${
+                              fc.status === 'urgent'
+                                ? 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                                : fc.status === 'degrading'
+                                  ? 'bg-[var(--cs-warn-soft)] border-[var(--cs-warn-border)] text-[var(--cs-warn-ink)]'
+                                  : fc.status === 'stable'
+                                    ? 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                                    : 'bg-[var(--cs-well)] border-[var(--cs-border)] text-[var(--cs-ink-muted)]'
+                            }`}
+                          >
+                            {fc.status.replace(/_/g, ' ')}
+                          </span>
+                        </div>
+                        <div className="font-mono text-[11px] text-[var(--cs-ink-2)] cs-tabular">
+                          Now: {fc.currentValue}{fc.unit}
+                          {fc.estimatedDaysToThreshold !== null
+                            ? ` • ~${fc.estimatedDaysToThreshold}d to ${fc.thresholdValue}${fc.unit}`
+                            : ''}
+                        </div>
+                        <p className="text-[11px] text-[var(--cs-ink-muted)] leading-snug">{fc.explanation}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
       )}
 
       {/* Main Diagnostics Display + Snapshot History */}
@@ -711,6 +910,246 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* GPU & Graphics Adapters Panel */}
+              {gpuObj && (
+                <div className="cs-panel p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="cs-heading text-sm font-bold text-[var(--cs-ink)]">
+                      GPU, VRAM & graphics drivers
+                    </h3>
+                    <span className="font-mono text-[11px] text-[var(--cs-ink-muted)] cs-tabular">
+                      {String(gpuObj.adapterCount ?? 0)} adapter(s)
+                      {gpuObj.hasLiveNvidiaSmi ? ' • NVML live' : ''}
+                    </span>
+                  </div>
+                  {Array.isArray(gpuObj.adapters) && (gpuObj.adapters as Array<any>).length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {(gpuObj.adapters as Array<any>).map((g, i) => (
+                        <div
+                          key={i}
+                          className={`rounded-md bg-[var(--cs-canvas)] border p-3 space-y-2 text-xs ${
+                            g.errorCode ? 'border-[var(--cs-danger-border)]' : 'border-[var(--cs-border)]'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="font-semibold text-[var(--cs-ink)] truncate">{g.name}</div>
+                              <div className="text-[11px] text-[var(--cs-ink-muted)] font-mono">
+                                {g.vendor} {g.driverVersion ? `• Driver ${g.driverVersion}` : ''}
+                              </div>
+                            </div>
+                            <span
+                              className={`shrink-0 px-2 py-0.5 rounded font-mono text-[10px] font-semibold border ${
+                                g.errorCode
+                                  ? 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                                  : 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                              }`}
+                            >
+                              {g.errorCode ? `Code ${g.errorCode}` : g.status || 'OK'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5 font-mono text-[11px] cs-tabular">
+                            <div className="rounded bg-[var(--cs-surface)] border border-[var(--cs-border)] px-2 py-1">
+                              <div className="text-[9px] font-sans text-[var(--cs-ink-muted)]">VRAM</div>
+                              <div className="text-[var(--cs-ink)]">
+                                {g.vramMb
+                                  ? g.vramUsedMb != null
+                                    ? `${g.vramUsedMb}/${g.vramMb}M`
+                                    : `${Math.round((g.vramMb / 1024) * 10) / 10} GB`
+                                  : 'N/A'}
+                              </div>
+                            </div>
+                            <div className="rounded bg-[var(--cs-surface)] border border-[var(--cs-border)] px-2 py-1">
+                              <div className="text-[9px] font-sans text-[var(--cs-ink-muted)]">Temp / Load</div>
+                              <div className="text-[var(--cs-ink)]">
+                                {g.temperatureCelsius != null ? `${g.temperatureCelsius}°C` : 'N/A'}
+                                {g.utilizationPercent != null ? ` • ${g.utilizationPercent}%` : ''}
+                              </div>
+                            </div>
+                            <div className="rounded bg-[var(--cs-surface)] border border-[var(--cs-border)] px-2 py-1">
+                              <div className="text-[9px] font-sans text-[var(--cs-ink-muted)]">Mode / Power</div>
+                              <div className="text-[var(--cs-ink)] truncate">
+                                {g.powerDrawWatts != null
+                                  ? `${g.powerDrawWatts}W`
+                                  : g.resolution
+                                    ? `${g.resolution}${g.refreshHz ? `@${g.refreshHz}Hz` : ''}`
+                                    : 'Standby'}
+                              </div>
+                            </div>
+                          </div>
+                          {g.errorDescription && (
+                            <div className="text-[11px] text-[var(--cs-danger-ink)] bg-[var(--cs-danger-soft)] border border-[var(--cs-danger-border)] rounded px-2 py-1">
+                              {g.errorDescription}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-xs text-[var(--cs-ink-muted)]">No GPU adapter details reported by host OS.</div>
+                  )}
+                </div>
+              )}
+
+              {/* Hardware Stress & Throughput Benchmark Panel */}
+              {stressObj && (
+                <div className="cs-panel p-4 space-y-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="cs-heading text-sm font-bold text-[var(--cs-ink)]">
+                        CPU thermal-throttling & disk I/O benchmark
+                      </h3>
+                      <div className="text-[11px] text-[var(--cs-ink-muted)]">
+                        {String((stressObj.cpuBenchmark as any)?.cpuModel || 'Host CPU')} •{' '}
+                        {String((stressObj.cpuBenchmark as any)?.logicalThreads ?? '?')} threads
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 font-mono text-xs cs-tabular">
+                      <span className="px-2 py-0.5 rounded bg-[var(--cs-ok-soft)] border border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]">
+                        Stability {String((stressObj.cpuBenchmark as any)?.stabilityPercent ?? '?')}%
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-[var(--cs-well)] border border-[var(--cs-border)] text-[var(--cs-ink-2)]">
+                        Drop {String((stressObj.cpuBenchmark as any)?.throttleDropPercent ?? 0)}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 font-mono cs-tabular text-xs">
+                    <div className="rounded bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5">
+                      <div className="text-[10px] font-sans text-[var(--cs-ink-muted)]">CPU Peak</div>
+                      <div className="text-sm font-bold text-[var(--cs-ink)]">
+                        {String((stressObj.cpuBenchmark as any)?.peakKOpsPerSec ?? '—')} kOps/s
+                      </div>
+                    </div>
+                    <div className="rounded bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5">
+                      <div className="text-[10px] font-sans text-[var(--cs-ink-muted)]">CPU Sustained</div>
+                      <div className="text-sm font-bold text-[var(--cs-accent-ink)]">
+                        {String((stressObj.cpuBenchmark as any)?.sustainedKOpsPerSec ?? '—')} kOps/s
+                      </div>
+                    </div>
+                    <div className="rounded bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5">
+                      <div className="text-[10px] font-sans text-[var(--cs-ink-muted)]">Disk Seq Write (16MB)</div>
+                      <div className="text-sm font-bold text-[var(--cs-ok-ink)]">
+                        {(stressObj.diskBenchmark as any)?.sequentialWriteMBps != null
+                          ? `${(stressObj.diskBenchmark as any).sequentialWriteMBps} MB/s`
+                          : 'N/A'}
+                      </div>
+                    </div>
+                    <div className="rounded bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5">
+                      <div className="text-[10px] font-sans text-[var(--cs-ink-muted)]">Disk Seq Read (16MB)</div>
+                      <div className="text-sm font-bold text-[var(--cs-ink)]">
+                        {(stressObj.diskBenchmark as any)?.sequentialReadMBps != null
+                          ? `${(stressObj.diskBenchmark as any).sequentialReadMBps} MB/s`
+                          : 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {stressWindowsChart.length > 0 && (
+                    <div className="h-36 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={stressWindowsChart} margin={{ top: 6, right: 6, left: -10, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="var(--cs-border)" vertical={false} />
+                          <XAxis dataKey="window" tick={{ fill: 'var(--cs-ink-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                          <YAxis tick={{ fill: 'var(--cs-ink-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                          <Tooltip
+                            cursor={{ fill: 'var(--cs-well)' }}
+                            contentStyle={{
+                              backgroundColor: 'var(--cs-surface)',
+                              borderColor: 'var(--cs-border-strong)',
+                              color: 'var(--cs-ink)',
+                              borderRadius: '8px',
+                              fontSize: 12,
+                            }}
+                          />
+                          <Bar dataKey="kOps" name="kOps/s" fill="var(--cs-accent)" radius={[3, 3, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Peripherals (USB, Bluetooth, Audio, Cameras & PnP Device Faults) */}
+              {peripObj && (
+                <div className="cs-panel p-4 space-y-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="cs-heading text-sm font-bold text-[var(--cs-ink)]">
+                      Peripherals & Plug-and-Play health (USB, Bluetooth, Audio)
+                    </h3>
+                    <div className="flex flex-wrap gap-1.5 font-mono text-[11px] cs-tabular">
+                      <span className="px-2 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-2)]">
+                        USB {(peripObj.counts as any)?.usb ?? 0}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-2)]">
+                        BT {(peripObj.counts as any)?.bluetooth ?? 0}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-[var(--cs-well)] text-[var(--cs-ink-2)]">
+                        Audio {(peripObj.counts as any)?.audio ?? 0}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded border ${
+                          ((peripObj.counts as any)?.faultedDevices ?? 0) > 0
+                            ? 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger-border)] text-[var(--cs-danger-ink)]'
+                            : 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok-border)] text-[var(--cs-ok-ink)]'
+                        }`}
+                      >
+                        Faults {(peripObj.counts as any)?.faultedDevices ?? 0}
+                      </span>
+                    </div>
+                  </div>
+
+                  {Array.isArray(peripObj.faultedDevices) && (peripObj.faultedDevices as Array<any>).length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="font-semibold text-[var(--cs-danger-ink)]">
+                        OS Plug-and-Play device faults / disabled entries
+                      </div>
+                      {(peripObj.faultedDevices as Array<any>).map((f, i) => (
+                        <div
+                          key={i}
+                          className="rounded-md bg-[var(--cs-danger-soft)] border border-[var(--cs-danger-border)] px-3 py-2 text-[var(--cs-danger-ink)]"
+                        >
+                          <div className="flex items-center justify-between gap-2 font-mono text-[11px] font-semibold">
+                            <span>{f.name} ({f.deviceClass})</span>
+                            <span>Code {f.errorCode}</span>
+                          </div>
+                          <div className="mt-0.5 opacity-95">{f.errorDescription}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                    {[
+                      { title: 'USB devices', items: (peripObj.usbDevices as Array<any>) || [] },
+                      { title: 'Bluetooth', items: (peripObj.bluetoothDevices as Array<any>) || [] },
+                      { title: 'Audio & monitors', items: [...((peripObj.audioEndpoints as Array<any>) || []), ...((peripObj.monitors as Array<any>) || [])] },
+                    ].map((group) => (
+                      <div
+                        key={group.title}
+                        className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] p-2.5 space-y-1.5"
+                      >
+                        <div className="font-semibold text-[var(--cs-ink)]">{group.title}</div>
+                        {group.items.length === 0 ? (
+                          <div className="text-[11px] text-[var(--cs-ink-muted)]">None enumerated</div>
+                        ) : (
+                          <div className="space-y-1 max-h-32 overflow-y-auto pr-1">
+                            {group.items.slice(0, 8).map((item, idx) => (
+                              <div key={idx} className="flex items-center justify-between gap-2 text-[11px]">
+                                <span className="truncate text-[var(--cs-ink-2)]">{item.name}</span>
+                                <span className="font-mono text-[10px] text-[var(--cs-ink-muted)] shrink-0">
+                                  {item.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 

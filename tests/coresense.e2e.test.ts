@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCoreSenseServer, type CoreSenseServerContext } from '../apps/api/src/server.js';
 import { generateTotpCode } from '../apps/api/src/security/crypto.js';
+import { analyzeTelemetryHealth } from '../apps/api/src/services/anomalyEngine.js';
 import { executeValidatedDiagnosticTool } from '@coresense/diagnostics-core';
+import { StructuredPcbInspectionSchema, type DiagnosticResult } from '@coresense/shared';
 
 describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite', () => {
   let ctx: CoreSenseServerContext;
@@ -149,7 +151,7 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       url: '/api/v1/releases/latest',
     });
     expect(releaseRes.statusCode).toBe(200);
-    expect(releaseRes.json().desktop.version).toBe('1.0.0');
+    expect(releaseRes.json().desktop.version).toBe('1.1.0');
   });
 
   it('3. Runs genuine local Windows/OS diagnostics and strictly enforces tool registry security & approval gates', async () => {
@@ -456,5 +458,142 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
     expect(delRes.statusCode).toBe(200);
     const stillExists = await ctx.customerDb.db.get('SELECT id FROM users WHERE email = ?', 'bob@example.com');
     expect(stillExists).toBeUndefined();
+  });
+
+  it('8. Executes expanded real hardware collectors (GPU, USB/BT/Audio Peripherals, Bounded CPU/Disk Stress Probe)', async () => {
+    const gpuRes = await executeValidatedDiagnosticTool('gpu_diagnostics');
+    expect(gpuRes.measurementType).toBe('measured');
+    expect(gpuRes.toolId).toBe('gpu_diagnostics');
+    expect(Array.isArray(gpuRes.data.adapters)).toBe(true);
+
+    const peripRes = await executeValidatedDiagnosticTool('peripherals_diagnostics');
+    expect(peripRes.measurementType).toBe('measured');
+    expect(peripRes.toolId).toBe('peripherals_diagnostics');
+    expect(peripRes.data.counts).toBeDefined();
+    expect(Array.isArray(peripRes.data.faultedDevices)).toBe(true);
+
+    const stressRes = await executeValidatedDiagnosticTool('hardware_stress_probe');
+    expect(stressRes.measurementType).toBe('measured');
+    expect(stressRes.toolId).toBe('hardware_stress_probe');
+    const cpuBench = stressRes.data.cpuBenchmark as {
+      peakKOpsPerSec: number;
+      stabilityPercent: number;
+      windows: unknown[];
+    };
+    expect(cpuBench.peakKOpsPerSec).toBeGreaterThan(0);
+    expect(cpuBench.windows.length).toBe(4);
+    expect(cpuBench.stabilityPercent).toBeGreaterThanOrEqual(0);
+    expect(cpuBench.stabilityPercent).toBeLessThanOrEqual(100);
+  });
+
+  it('9. Computes real MAD Modified Z-Score anomalies, OLS linear regression degradation forecasts, and exposes health-analysis API', async () => {
+    const baseMs = Date.parse('2026-10-01T12:00:00.000Z');
+    const dayMs = 24 * 60 * 60 * 1000;
+    const makeSnap = (dayOffset: number, cpuTemp: number, battWear: number, diskUsed: number): DiagnosticResult => ({
+      id: `snap-${dayOffset}-${cpuTemp}`,
+      toolId: 'full_system_snapshot',
+      measurementType: 'measured',
+      source: 'Unit Test Real Telemetry Series',
+      platform: 'windows',
+      osVersion: 'Windows 11',
+      collectedAt: new Date(baseMs + dayOffset * dayMs).toISOString(),
+      durationMs: 420,
+      summary: `Day ${dayOffset}: CPU ${cpuTemp}C, Battery wear ${battWear}%, Disk ${diskUsed}%`,
+      limitations: [],
+      warnings: [],
+      data: {
+        cpu: { utilizationPercent: 22 + (dayOffset % 3), temperatureCelsius: cpuTemp },
+        memory: { utilizationPercent: 48 },
+        storage: { volumes: [{ mount: 'C:', usedPercent: diskUsed }], physicalDisks: [{ model: 'NVMe', wearPercent: 10 + dayOffset * 0.5 }] },
+        power: { battery: { present: true, chargePercent: 88, wearPercent: battWear } },
+        gpu: { adapterCount: 1, adapters: [{ name: 'RTX 4070', temperatureCelsius: 52 }] },
+        network: { connectivity: { dnsResolved: true, dnsLatencyMs: 18 } },
+        peripherals: { counts: { usb: 5, bluetooth: 2, audio: 2, faultedDevices: 0 } },
+      },
+    });
+
+    // 5 normal baseline scans with steady battery wear (+0.5%/day) + 1 final thermal spike (88C vs ~51C baseline)
+    const series: DiagnosticResult[] = [
+      makeSnap(0, 50, 10, 60),
+      makeSnap(4, 52, 12, 62),
+      makeSnap(8, 51, 14, 64),
+      makeSnap(12, 53, 16, 66),
+      makeSnap(16, 51, 18, 68),
+      makeSnap(20, 88, 20, 70),
+    ];
+
+    const analysis = analyzeTelemetryHealth(series, { deviceId: 'dev-ml-1' });
+    expect(analysis.baselineReady).toBe(true);
+    expect(analysis.realSnapshotsAnalyzed).toBe(6);
+    expect(analysis.overallHealthScore).not.toBeNull();
+
+    // Verify MAD Modified Z-Score caught the 88C CPU thermal spike!
+    const tempAnomaly = analysis.anomalies.find((a) => a.metric === 'CPU Temperature');
+    expect(tempAnomaly).toBeDefined();
+    expect(tempAnomaly!.zScore).toBeGreaterThan(3.5);
+    expect(tempAnomaly!.severity).toBe('critical');
+
+    // Verify OLS linear regression computed exact +0.5%/day battery wear slope (R^2 = 1.0) -> 20 days to 30% wear!
+    const battForecast = analysis.forecasts.find((f) => f.metric === 'Battery Capacity Wear');
+    expect(battForecast).toBeDefined();
+    expect(battForecast!.slopePerDay).toBeCloseTo(0.5, 2);
+    expect(battForecast!.rSquared).toBeCloseTo(1.0, 2);
+    expect(battForecast!.estimatedDaysToThreshold).toBe(20);
+    expect(battForecast!.status).toBe('urgent');
+
+    // Verify insufficient history honesty (< 3 scans)
+    const sparse = analyzeTelemetryHealth(series.slice(0, 2));
+    expect(sparse.baselineReady).toBe(false);
+    expect(sparse.anomalies.length).toBe(0);
+    expect(sparse.forecasts.every((f) => f.status === 'insufficient_history')).toBe(true);
+
+    // Verify API endpoint GET /api/v1/diagnostics/health-analysis returns HTTP 200 with valid schema
+    const apiRes = await ctx.app.inject({
+      method: 'GET',
+      url: '/api/v1/diagnostics/health-analysis',
+      headers: { Authorization: `Bearer ${userAToken}` },
+    });
+    expect(apiRes.statusCode).toBe(200);
+    expect(apiRes.json().analysis.subsystemScores.length).toBe(8);
+  });
+
+  it('10. Produces Zod-validated Structured PCB Vision Inspection output and persists it cleanly on investigations', async () => {
+    // Valid 1x1 PNG header buffer (base64)
+    const tinyPngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+    const invRes = await ctx.app.inject({
+      method: 'POST',
+      url: '/api/v1/investigations',
+      headers: { Authorization: `Bearer ${userAToken}` },
+      payload: {
+        title: 'PCB Visual Inspection Test',
+        initialSymptom: 'Inspect this motherboard photo near USB-C charging IC U7000 for burn marks.',
+        inputModality: 'image',
+        imageBase64: `data:image/png;base64,${tinyPngBase64}`,
+        imageMimeType: 'image/png',
+        imageFilename: 'board-u7000.png',
+      },
+    });
+    expect(invRes.statusCode).toBe(201);
+    const body = invRes.json();
+    expect(body.assistantMessage.structuredInspection).toBeTruthy();
+
+    const parsedVision = StructuredPcbInspectionSchema.safeParse(body.assistantMessage.structuredInspection);
+    expect(parsedVision.success).toBe(true);
+    // Alice has externalAiConsent=false in test 2, so local metadata fallback must run honestly without fabricating silkscreen
+    expect(body.assistantMessage.structuredInspection.analysisMode).toBe('local_metadata_fallback');
+    expect(body.assistantMessage.structuredInspection.imageClarity).toBe('unclear_macro_needed');
+
+    // Confirm persistence when reloading investigation detail
+    const reload = await ctx.app.inject({
+      method: 'GET',
+      url: `/api/v1/investigations/${body.investigation.id}`,
+      headers: { Authorization: `Bearer ${userAToken}` },
+    });
+    expect(reload.statusCode).toBe(200);
+    const assistantMsg = reload.json().messages.find((m: any) => m.role === 'assistant');
+    expect(assistantMsg.structuredInspection).toBeTruthy();
+    expect(assistantMsg.structuredInspection.boardOrDeviceType).toContain('board-u7000.png');
   });
 });

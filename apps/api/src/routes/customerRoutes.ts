@@ -42,6 +42,7 @@ import {
   searchUserKnowledgeBase,
 } from '../services/rag.js';
 import { inspectImageBuffer, saveUserAttachment } from '../services/imageInspector.js';
+import { analyzeTelemetryHealth } from '../services/anomalyEngine.js';
 import {
   type ProposedToolCall,
   runCopilotTurn,
@@ -281,15 +282,15 @@ export function registerCustomerRoutes(
       product: 'CoreSense',
       desktop: {
         version: String(map.get('latestDesktopVersion') || CORESENSE_VERSION),
-        releaseDate: '2026-11-21',
-        releaseUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/tag/v1.0.0',
-        notes: 'CoreSense v1.0.0 — 100% Free AI Electronics Diagnostics, Native Rust Tauri Diagnostics, Multimodal AI Repair Copilot, Technical Manuals RAG, and Desktop↔Mobile Sync.',
+        releaseDate: '2026-11-22',
+        releaseUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/tag/v1.1.0',
+        notes: 'CoreSense v1.1.0 — Full Hardware Expansion (Desktop GPU, USB/Bluetooth/Audio PnP Faults, Stress Benchmarks + Mobile Wi-Fi/Hotspot & SoC Thermal-Throttling Test) and AI/ML Upgrades (Predictive MAD Anomaly Scoring, OLS Degradation Forecasting, Structured Vision PCB Inspector).',
         installers: {
-          windowsNsis: 'CoreSense_1.0.0_x64-setup.exe',
-          windowsMsi: 'CoreSense_1.0.0_x64_en-US.msi',
-          macosDmg: 'CoreSense_1.0.0_aarch64.dmg',
-          linuxDeb: 'CoreSense_1.0.0_amd64.deb',
-          linuxAppImage: 'CoreSense_1.0.0_amd64.AppImage',
+          windowsNsis: 'CoreSense_1.1.0_x64-setup.exe',
+          windowsMsi: 'CoreSense_1.1.0_x64_en-US.msi',
+          macosDmg: 'CoreSense_1.1.0_aarch64.dmg',
+          linuxDeb: 'CoreSense_1.1.0_amd64.deb',
+          linuxAppImage: 'CoreSense_1.1.0_amd64.AppImage',
         },
       },
       mobile: {
@@ -972,6 +973,43 @@ export function registerCustomerRoutes(
     return reply.code(201).send({ snapshot: sim });
   });
 
+  const mapSnapshotRow = (r: Record<string, unknown>): DiagnosticResult => ({
+    id: String(r.id),
+    toolId: String(r.tool_id),
+    measurementType: r.measurement_type as DiagnosticResult['measurementType'],
+    simulatedScenarioId: r.simulated_scenario_id ? String(r.simulated_scenario_id) : undefined,
+    source: String(r.source),
+    platform: r.platform as DiagnosticResult['platform'],
+    osVersion: String(r.os_version),
+    collectedAt: String(r.collected_at),
+    durationMs: Number(r.duration_ms),
+    summary: String(r.summary),
+    warnings: JSON.parse(String(r.warnings_json || '[]')),
+    limitations: JSON.parse(String(r.limitations_json || '[]')),
+    data: JSON.parse(String(r.data_json || '{}')),
+  });
+
+  app.get('/api/v1/diagnostics/health-analysis', { preHandler: requireCustomerAuth }, async (req) => {
+    const { deviceId, includeSimulated } = req.query as { deviceId?: string; includeSimulated?: string };
+    const rows = deviceId
+      ? ((await customerDb.db.all(
+          'SELECT * FROM diagnostic_snapshots WHERE user_id = ? AND device_id = ? ORDER BY collected_at DESC LIMIT 120',
+          req.customerUser!.id,
+          deviceId,
+        )) as Array<Record<string, unknown>>)
+      : ((await customerDb.db.all(
+          'SELECT * FROM diagnostic_snapshots WHERE user_id = ? ORDER BY collected_at DESC LIMIT 120',
+          req.customerUser!.id,
+        )) as Array<Record<string, unknown>>);
+
+    const snapshots = rows.map(mapSnapshotRow);
+    const analysis = analyzeTelemetryHealth(snapshots, {
+      deviceId: deviceId || null,
+      includeSimulated: includeSimulated === 'true',
+    });
+    return { analysis };
+  });
+
   app.get('/api/v1/diagnostics/history', { preHandler: requireCustomerAuth }, async (req) => {
     const { deviceId, limit } = req.query as { deviceId?: string; limit?: string };
     const max = Math.min(100, Math.max(1, Number(limit) || 30));
@@ -1128,6 +1166,23 @@ export function registerCustomerRoutes(
       }
     }
 
+    // Load recent real diagnostic history for live ML anomaly & degradation context
+    const recentRows = inv.device_id
+      ? ((await customerDb.db.all(
+          'SELECT * FROM diagnostic_snapshots WHERE user_id = ? AND device_id = ? ORDER BY collected_at DESC LIMIT 40',
+          user.id,
+          String(inv.device_id),
+        )) as Array<Record<string, unknown>>)
+      : ((await customerDb.db.all(
+          'SELECT * FROM diagnostic_snapshots WHERE user_id = ? ORDER BY collected_at DESC LIMIT 40',
+          user.id,
+        )) as Array<Record<string, unknown>>);
+    const recentSnaps = recentRows.map(mapSnapshotRow);
+    const healthAnalysis =
+      recentSnaps.length > 0
+        ? analyzeTelemetryHealth(recentSnaps, { deviceId: inv.device_id ? String(inv.device_id) : null })
+        : null;
+
     const turnOut = await runCopilotTurn({
       userMessage: messageText,
       deviceProfile: deviceRow
@@ -1145,6 +1200,7 @@ export function registerCustomerRoutes(
       existingEvidence,
       existingHypotheses,
       attachedSnapshots,
+      healthAnalysis,
       retrievedCitations,
       imageAttachment,
       externalAiConsent: user.external_ai_consent === 1,
@@ -1156,14 +1212,18 @@ export function registerCustomerRoutes(
 
     const assistantMsgId = crypto.randomUUID();
     const replyTime = new Date().toISOString();
+    const assistantAttachments = turnOut.structuredInspection
+      ? [{ kind: 'structured_pcb_inspection', inspection: turnOut.structuredInspection }]
+      : [];
     await customerDb.db.run(
         `INSERT INTO investigation_messages (
           id, investigation_id, user_id, role, content, input_modality,
-          citations_json, tool_calls_json, ai_provider, ai_model, created_at
-        ) VALUES (?, ?, ?, 'assistant', ?, 'text', ?, ?, ?, ?, ?)`, assistantMsgId,
+          attachments_json, citations_json, tool_calls_json, ai_provider, ai_model, created_at
+        ) VALUES (?, ?, ?, 'assistant', ?, 'text', ?, ?, ?, ?, ?, ?)`, assistantMsgId,
         investigationId,
         user.id,
         turnOut.assistantReply,
+        JSON.stringify(assistantAttachments),
         JSON.stringify(turnOut.citationsUsed),
         JSON.stringify(turnOut.proposedTools),
         turnOut.aiProvider,
@@ -1222,6 +1282,7 @@ export function registerCustomerRoutes(
         aiModel: turnOut.aiModel,
         citations: turnOut.citationsUsed,
         proposedTools: turnOut.proposedTools,
+        structuredInspection: turnOut.structuredInspection ?? null,
         createdAt: replyTime,
       },
       evidence: combinedEvidence,
@@ -1338,18 +1399,24 @@ export function registerCustomerRoutes(
         createdAt: inv.created_at,
         updatedAt: inv.updated_at,
       },
-      messages: messages.map((m) => ({
-        id: m.id,
-        role: m.role,
-        content: m.content,
-        inputModality: m.input_modality,
-        attachments: JSON.parse(String(m.attachments_json || '[]')),
-        citations: JSON.parse(String(m.citations_json || '[]')),
-        toolCalls: JSON.parse(String(m.tool_calls_json || '[]')),
-        aiProvider: m.ai_provider,
-        aiModel: m.ai_model,
-        createdAt: m.created_at,
-      })),
+      messages: messages.map((m) => {
+        const parsedAttachments = JSON.parse(String(m.attachments_json || '[]')) as Array<Record<string, unknown>>;
+        const visionEntry = parsedAttachments.find((a) => a.kind === 'structured_pcb_inspection');
+        const userAttachments = parsedAttachments.filter((a) => a.kind !== 'structured_pcb_inspection');
+        return {
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          inputModality: m.input_modality,
+          attachments: userAttachments,
+          structuredInspection: visionEntry?.inspection ?? null,
+          citations: JSON.parse(String(m.citations_json || '[]')),
+          toolCalls: JSON.parse(String(m.tool_calls_json || '[]')),
+          aiProvider: m.ai_provider,
+          aiModel: m.ai_model,
+          createdAt: m.created_at,
+        };
+      }),
     };
   });
 
