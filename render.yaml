@@ -37,7 +37,7 @@ services:
   - type: web
     name: coresense-mobile-pwa
     runtime: static
-    buildCommand: npm ci && npm --workspace @coresense/shared run build && npm --workspace @coresense/mobile run build
+    buildCommand: npm ci --include=dev && npm --workspace @coresense/shared run build && npm --workspace @coresense/mobile run build
     staticPublishPath: apps/mobile/dist
     envVars:
       - key: VITE_API_URL
@@ -50,7 +50,7 @@ services:
   - type: web
     name: coresense-owner-console
     runtime: static
-    buildCommand: npm ci && npm --workspace @coresense/shared run build && npm --workspace @coresense/owner-console run build
+    buildCommand: npm ci --include=dev && npm --workspace @coresense/shared run build && npm --workspace @coresense/owner-console run build
     staticPublishPath: apps/owner-console/dist
     envVars:
       - key: VITE_API_URL

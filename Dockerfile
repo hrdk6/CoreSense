@@ -5,6 +5,7 @@
 
 FROM node:24-slim AS builder
 WORKDIR /app
+ENV NODE_ENV=development
 
 # Copy workspace manifests first for layer caching
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -12,7 +13,7 @@ COPY packages/shared/package.json packages/shared/tsconfig.json ./packages/share
 COPY packages/diagnostics-core/package.json packages/diagnostics-core/tsconfig.json ./packages/diagnostics-core/
 COPY apps/api/package.json apps/api/tsconfig.json ./apps/api/
 
-RUN npm ci --workspace @coresense/shared --workspace @coresense/diagnostics-core --workspace @coresense/api --include-workspace-root=false
+RUN npm ci --include=dev --workspace @coresense/shared --workspace @coresense/diagnostics-core --workspace @coresense/api --include-workspace-root=true
 
 COPY packages/shared/src ./packages/shared/src
 COPY packages/diagnostics-core/src ./packages/diagnostics-core/src
