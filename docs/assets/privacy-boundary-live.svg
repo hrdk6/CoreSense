@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 250" width="1200" height="250" fill="none" role="img" aria-label="CoreSense Physical Dual-Database Privacy Firewall Animation">
+  <defs>
+    <pattern id="privGrid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#10141B" stroke-width="1"/>
+    </pattern>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .sans { font-family: 'Archivo', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .mono { font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace; }
+      .flow-safe { stroke-dasharray: 8 8; animation: dashFlow 1.4s linear infinite; }
+      .shield-pulse { animation: shieldBeat 2.4s ease-in-out infinite; }
+      .block-flash { animation: blockFlash 2.2s ease-in-out infinite; }
+      @keyframes dashFlow {
+        from { stroke-dashoffset: 32; }
+        to { stroke-dashoffset: 0; }
+      }
+      @keyframes shieldBeat {
+        0%, 100% { stroke-opacity: 1; }
+        50% { stroke-opacity: 0.45; }
+      }
+      @keyframes blockFlash {
+        0%, 100% { opacity: 0.95; }
+        50% { opacity: 0.35; }
+      }
+    </style>
+  </defs>
+
+  <!-- Background Frame -->
+  <rect x="2" y="2" width="1196" height="246" rx="16" fill="#000000" stroke="#22262B" stroke-width="2"/>
+  <rect x="10" y="10" width="1180" height="230" rx="12" fill="url(#privGrid)"/>
+
+  <!-- Header -->
+  <text x="36" y="34" fill="#8B9691" font-size="11" font-weight="700" letter-spacing="1.4" class="mono">PHYSICAL PRIVACY ISOLATION BOUNDARY // ZERO CUSTOMER DATA ACCESS IN OWNER PLANE</text>
+
+  <!-- LEFT ZONE: Customer Workspace Plane -->
+  <rect x="34" y="50" width="356" height="174" rx="12" fill="#071120" stroke="#2B5AA8" stroke-width="1.8"/>
+  <rect x="34" y="50" width="356" height="32" rx="12" fill="#0E2140"/>
+  <rect x="34" y="70" width="356" height="12" fill="#0E2140"/>
+  <circle cx="52" cy="66" r="4.5" fill="#7BA7F7"/>
+  <text x="66" y="70" fill="#DBEAFE" font-size="12" font-weight="700" class="mono">CUSTOMER PLANE  /api/v1/*</text>
+
+  <text x="52" y="104" fill="#E8ECEA" font-size="14" font-weight="700" class="sans">coresense_customer.db</text>
+  <text x="52" y="122" fill="#93C5FD" font-size="11" class="mono">Auth: JWT_SECRET (aud: coresense-customer)</text>
+
+  <g class="mono" font-size="11" fill="#CBD5E1">
+    <text x="52" y="146">• Personal chats, board photos &amp; voice notes</text>
+    <text x="52" y="164">• Uploaded PDF/MD technical manuals (FTS5)</text>
+    <text x="52" y="182">• Private devices, serials &amp; repair expenses</text>
+    <text x="52" y="200">• BYOK API keys (AES-256-GCM encrypted)</text>
+  </g>
+
+  <!-- CENTER ZONE: Privacy Allowlist Scrubber & Firewall -->
+  <rect x="442" y="50" width="316" height="174" rx="12" fill="#180A0E" stroke="#E87A88" stroke-width="1.8" class="shield-pulse"/>
+  <rect x="442" y="50" width="316" height="32" rx="12" fill="#2F1118"/>
+  <rect x="442" y="70" width="316" height="12" fill="#2F1118"/>
+  <circle cx="460" cy="66" r="4.5" fill="#E87A88" class="block-flash"/>
+  <text x="474" y="70" fill="#FFE4E6" font-size="12" font-weight="700" class="mono">PRIVACY ALLOWLIST SCRUBBER</text>
+
+  <!-- Blocked PII Channel (Top) -->
+  <rect x="458" y="94" width="284" height="50" rx="8" fill="#240B11" stroke="#7F1D1D" stroke-dasharray="4 3"/>
+  <text x="470" y="112" fill="#FDA4AF" font-size="10.2" font-weight="700" class="mono">✕ BLOCKED PII (23 FORBIDDEN KEYS)</text>
+  <text x="470" y="131" fill="#FCA5A5" font-size="9.6" class="mono">email · prompt · photo · serial · path</text>
+
+  <!-- Allowed Scrubbed Channel (Bottom) -->
+  <rect x="458" y="156" width="284" height="54" rx="8" fill="#071C16" stroke="#166534"/>
+  <text x="470" y="174" fill="#6EE7B7" font-size="10.2" font-weight="700" class="mono">✓ ALLOWLISTED AGGREGATES ONLY</text>
+  <text x="470" y="191" fill="#A7F3D0" font-size="9.6" class="mono">HMAC-SHA256 hash · 17 event names</text>
+  <text x="470" y="204" fill="#A7F3D0" font-size="9.6" class="mono">token counts · latency · status codes</text>
+
+  <!-- Animated Blocked Packet Line (Customer -> Blocked Gate) -->
+  <line x1="390" y1="118" x2="438" y2="118" stroke="#E87A88" stroke-width="2.2" stroke-dasharray="5 5"/>
+  <circle r="4.5" fill="#FB7185" filter="url(#glow)">
+    <animateMotion dur="2s" repeatCount="indefinite" path="M 392 118 L 434 118 L 424 118"/>
+  </circle>
+  <text x="415" y="108" fill="#FB7185" font-size="13" font-weight="800" text-anchor="middle" class="mono block-flash">✕</text>
+
+  <!-- Animated Allowed Packet Line (Customer -> Scrubber -> Owner) -->
+  <line x1="390" y1="184" x2="442" y2="184" stroke="#5EC6A8" stroke-width="2.4" class="flow-safe"/>
+  <line x1="758" y1="184" x2="810" y2="184" stroke="#5EC6A8" stroke-width="2.4" class="flow-safe"/>
+  <circle r="4.5" fill="#5EC6A8" filter="url(#glow)">
+    <animateMotion dur="2.6s" repeatCount="indefinite" path="M 390 184 L 442 184"/>
+  </circle>
+  <circle r="4.5" fill="#34D399" filter="url(#glow)">
+    <animateMotion dur="2.6s" repeatCount="indefinite" path="M 758 184 L 810 184"/>
+  </circle>
+
+  <!-- Blocked Reverse Query Indicator (Owner cannot query Customer) -->
+  <line x1="810" y1="118" x2="762" y2="118" stroke="#E87A88" stroke-width="2" stroke-dasharray="4 4"/>
+  <text x="784" y="110" fill="#FB7185" font-size="9.5" font-weight="700" text-anchor="middle" class="mono">NO SQL</text>
+  <text x="784" y="132" fill="#FB7185" font-size="9.5" font-weight="700" text-anchor="middle" class="mono">REF</text>
+
+  <!-- RIGHT ZONE: Owner Observability Plane -->
+  <rect x="810" y="50" width="356" height="174" rx="12" fill="#061914" stroke="#22A884" stroke-width="1.8"/>
+  <rect x="810" y="50" width="356" height="32" rx="12" fill="#0C2E24"/>
+  <rect x="810" y="70" width="356" height="12" fill="#0C2E24"/>
+  <circle cx="828" cy="66" r="4.5" fill="#5EC6A8"/>
+  <text x="842" y="70" fill="#D1FAE5" font-size="12" font-weight="700" class="mono">OWNER PLANE  /owner-api/v1/*</text>
+
+  <text x="828" y="104" fill="#E8ECEA" font-size="14" font-weight="700" class="sans">coresense_owner.db</text>
+  <text x="828" y="122" fill="#6EE7B7" font-size="11" class="mono">Auth: OWNER_JWT_SECRET + RFC 6238 TOTP MFA</text>
+
+  <g class="mono" font-size="11" fill="#CBD5E1">
+    <text x="828" y="146">• Separate downloads vs first activations</text>
+    <text x="828" y="164">• Anonymous DAU / WAU / MAU &amp; funnel</text>
+    <text x="828" y="182">• AI token/cost ledger &amp; API latency metrics</text>
+    <text x="828" y="200">• Scrubbed crash logs &amp; opt-in support</text>
+  </g>
+</svg>

@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 185" width="1200" height="185" fill="none" role="img" aria-label="CoreSense Closed-Loop AI Diagnostic Pipeline Animation">
+  <defs>
+    <pattern id="loopGrid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M 30 0 L 0 0 0 30" fill="none" stroke="#0F1319" stroke-width="1"/>
+    </pattern>
+    <filter id="dotGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .sans { font-family: 'Archivo', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+      .mono { font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace; }
+      .flow-wire { stroke-dasharray: 10 8; animation: wireFlow 1.6s linear infinite; }
+      .stage-led { animation: stageBlink 2.5s ease-in-out infinite; }
+      .d1 { animation-delay: 0s; }
+      .d2 { animation-delay: 0.5s; }
+      .d3 { animation-delay: 1.0s; }
+      .d4 { animation-delay: 1.5s; }
+      .d5 { animation-delay: 2.0s; }
+      @keyframes wireFlow {
+        from { stroke-dashoffset: 36; }
+        to { stroke-dashoffset: 0; }
+      }
+      @keyframes stageBlink {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.3; }
+      }
+    </style>
+  </defs>
+
+  <rect x="2" y="2" width="1196" height="181" rx="14" fill="#000000" stroke="#22262B" stroke-width="2"/>
+  <rect x="10" y="10" width="1180" height="165" rx="10" fill="url(#loopGrid)"/>
+
+  <text x="32" y="32" fill="#8B9691" font-size="10.5" font-weight="700" letter-spacing="1.4" class="mono">EVIDENCE-FIRST CLOSED DIAGNOSTIC LOOP // MEASURE → GATE → RETRIEVE → REASON → VERIFY</text>
+
+  <!-- Main Animated Signal Bus Line -->
+  <path id="busPath" d="M 128 106 L 1072 106" stroke="#263142" stroke-width="2.5"/>
+  <path d="M 128 106 L 1072 106" stroke="#7BA7F7" stroke-width="2.5" class="flow-wire"/>
+
+  <!-- Feedback Loop Arc underneath (Verify -> Measure) -->
+  <path d="M 1072 148 V 162 H 128 V 148" stroke="#1E3A34" stroke-width="1.6" stroke-dasharray="6 5"/>
+  <text x="600" y="159" fill="#5EC6A8" font-size="9.5" font-weight="600" text-anchor="middle" class="mono">BEFORE-VS-AFTER RE-MEASUREMENT LOOP (NEVER ASSUMES FIX WITHOUT FRESH DATA)</text>
+
+  <!-- Traveling Telemetry Packet Dots -->
+  <circle r="4.5" fill="#7BA7F7" filter="url(#dotGlow)">
+    <animateMotion dur="4.0s" repeatCount="indefinite" path="M 128 106 L 1072 106"/>
+  </circle>
+  <circle r="3.5" fill="#5EC6A8" filter="url(#dotGlow)">
+    <animateMotion dur="5.2s" repeatCount="indefinite" path="M 1072 148 L 1072 162 L 128 162 L 128 148"/>
+  </circle>
+
+  <!-- Stage 1: Measure (Cobalt) -->
+  <g transform="translate(30, 52)">
+    <rect width="196" height="94" rx="10" fill="#091529" stroke="#3B82F6" stroke-width="1.6"/>
+    <circle cx="16" cy="18" r="3.5" fill="#7BA7F7" class="stage-led d1"/>
+    <text x="27" y="22" fill="#93C5FD" font-size="10" font-weight="700" class="mono">01 // MEASURE</text>
+    <text x="14" y="45" fill="#F8FAFC" font-size="13" font-weight="700" class="sans">Hardware Probes</text>
+    <text x="14" y="63" fill="#CBD5E1" font-size="10" class="mono">Rust sysinfo · Win CIM</text>
+    <text x="14" y="79" fill="#94A3B8" font-size="10" class="mono">Mobile API · Multimeter</text>
+  </g>
+
+  <!-- Stage 2: Safety & Decode (Crimson) -->
+  <g transform="translate(266, 52)">
+    <rect width="196" height="94" rx="10" fill="#210B10" stroke="#F43F5E" stroke-width="1.6"/>
+    <circle cx="16" cy="18" r="3.5" fill="#FB7185" class="stage-led d2"/>
+    <text x="27" y="22" fill="#FDA4AF" font-size="10" font-weight="700" class="mono">02 // SAFETY GATE</text>
+    <text x="14" y="45" fill="#F8FAFC" font-size="13" font-weight="700" class="sans">Hazard &amp; Decoders</text>
+    <text x="14" y="63" fill="#CBD5E1" font-size="10" class="mono">Li-ion · HV PSU · Liquid</text>
+    <text x="14" y="79" fill="#94A3B8" font-size="10" class="mono">BSOD · PCB U/Q/C · PD</text>
+  </g>
+
+  <!-- Stage 3: Hybrid RAG (Violet) -->
+  <g transform="translate(502, 52)">
+    <rect width="196" height="94" rx="10" fill="#170E2B" stroke="#A78BFA" stroke-width="1.6"/>
+    <circle cx="16" cy="18" r="3.5" fill="#C4B5FD" class="stage-led d3"/>
+    <text x="27" y="22" fill="#DDD6FE" font-size="10" font-weight="700" class="mono">03 // HYBRID RAG</text>
+    <text x="14" y="45" fill="#F8FAFC" font-size="13" font-weight="700" class="sans">Manuals &amp; Vision</text>
+    <text x="14" y="63" fill="#CBD5E1" font-size="10" class="mono">FTS5 BM25 + Embedding-2</text>
+    <text x="14" y="79" fill="#94A3B8" font-size="10" class="mono">Injection Strip · Clarity</text>
+  </g>
+
+  <!-- Stage 4: AI Reasoner (Amber) -->
+  <g transform="translate(738, 52)">
+    <rect width="196" height="94" rx="10" fill="#211606" stroke="#F59E0B" stroke-width="1.6"/>
+    <circle cx="16" cy="18" r="3.5" fill="#FCD34D" class="stage-led d4"/>
+    <text x="27" y="22" fill="#FDE68A" font-size="10" font-weight="700" class="mono">04 // AI COPILOT</text>
+    <text x="14" y="45" fill="#F8FAFC" font-size="13" font-weight="700" class="sans">Multi-Provider AI</text>
+    <text x="14" y="63" fill="#CBD5E1" font-size="10" class="mono">Gemini 4 · OAI · Ollama</text>
+    <text x="14" y="79" fill="#94A3B8" font-size="10" class="mono">Offline Local Engine</text>
+  </g>
+
+  <!-- Stage 5: Verify (Emerald) -->
+  <g transform="translate(974, 52)">
+    <rect width="196" height="94" rx="10" fill="#061E17" stroke="#10B981" stroke-width="1.6"/>
+    <circle cx="16" cy="18" r="3.5" fill="#5EC6A8" class="stage-led d5"/>
+    <text x="27" y="22" fill="#A7F3D0" font-size="10" font-weight="700" class="mono">05 // VERIFY</text>
+    <text x="14" y="45" fill="#F8FAFC" font-size="13" font-weight="700" class="sans">5-State Resolution</text>
+    <text x="14" y="63" fill="#CBD5E1" font-size="10" class="mono">Before vs After Diff</text>
+    <text x="14" y="79" fill="#94A3B8" font-size="10" class="mono">Markdown Report Export</text>
+  </g>
+</svg>

@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" fill="none" role="img" aria-label="CoreSense — AI-Powered Electronics Diagnostics and Repair Intelligence Platform">
+  <defs>
+    <pattern id="scopeGrid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#11151C" stroke-width="1"/>
+    </pattern>
+    <pattern id="miniGrid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#121821" stroke-width="1"/>
+    </pattern>
+    <linearGradient id="sweepGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7BA7F7" stop-opacity="0"/>
+      <stop offset="70%" stop-color="#7BA7F7" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#7BA7F7" stop-opacity="0.45"/>
+    </linearGradient>
+    <linearGradient id="accentBar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7BA7F7"/>
+      <stop offset="35%" stop-color="#5EC6A8"/>
+      <stop offset="70%" stop-color="#E5B567"/>
+      <stop offset="100%" stop-color="#E87A88"/>
+    </linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="scopeClip">
+      <rect x="688" y="96" width="452" height="114" rx="6"/>
+    </clipPath>
+    <style>
+      .sans { font-family: 'Archivo', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+      .mono { font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace; }
+      .led-pulse { animation: ledPulse 2.2s ease-in-out infinite; }
+      .led-pulse-alt { animation: ledPulse 2.8s ease-in-out 0.6s infinite; }
+      .trace-beam { stroke-dasharray: 120 420; animation: beamMove 3.2s linear infinite; }
+      .trace-beam-2 { stroke-dasharray: 90 430; animation: beamMove 4.4s linear infinite; }
+      .logo-wave { stroke-dasharray: 140; stroke-dashoffset: 0; animation: logoPulse 3.6s ease-in-out infinite; }
+      .scan-bar { animation: scanSweep 4.8s linear infinite; }
+      .bar-1 { transform-origin: 699px 232px; animation: eqAnim 1.4s ease-in-out infinite; }
+      .bar-2 { transform-origin: 705px 232px; animation: eqAnim 1.4s ease-in-out 0.2s infinite; }
+      .bar-3 { transform-origin: 711px 232px; animation: eqAnim 1.4s ease-in-out 0.4s infinite; }
+      .bar-4 { transform-origin: 717px 232px; animation: eqAnim 1.4s ease-in-out 0.6s infinite; }
+
+      @keyframes ledPulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.35; }
+      }
+      @keyframes beamMove {
+        0% { stroke-dashoffset: 540; }
+        100% { stroke-dashoffset: 0; }
+      }
+      @keyframes logoPulse {
+        0%, 100% { stroke-dashoffset: 0; opacity: 1; }
+        45% { stroke-dashoffset: 28; opacity: 0.82; }
+        55% { stroke-dashoffset: -28; opacity: 1; }
+      }
+      @keyframes scanSweep {
+        0% { transform: translateX(-80px); }
+        100% { transform: translateX(470px); }
+      }
+      @keyframes eqAnim {
+        0%, 100% { transform: scaleY(0.4); }
+        50% { transform: scaleY(1); }
+      }
+    </style>
+  </defs>
+
+  <!-- OLED Black Precision Chassis -->
+  <rect x="2" y="2" width="1196" height="316" rx="18" fill="#000000" stroke="#22262B" stroke-width="2"/>
+  <rect x="10" y="10" width="1180" height="300" rx="14" fill="url(#scopeGrid)"/>
+  <!-- Top 3px Spectrum Instrument Rail -->
+  <rect x="44" y="2" width="1112" height="3" rx="1.5" fill="url(#accentBar)"/>
+
+  <!-- Corner Instrument Registration Brackets -->
+  <path d="M24 38 V24 H38" stroke="#373D45" stroke-width="2.2" stroke-linecap="square"/>
+  <path d="M1176 38 V24 H1162" stroke="#373D45" stroke-width="2.2" stroke-linecap="square"/>
+  <path d="M24 282 V296 H38" stroke="#373D45" stroke-width="2.2" stroke-linecap="square"/>
+  <path d="M1176 282 V296 H1162" stroke="#373D45" stroke-width="2.2" stroke-linecap="square"/>
+
+  <!-- Top Telemetry Header Strip -->
+  <circle cx="52" cy="36" r="4.5" fill="#5EC6A8" class="led-pulse" filter="url(#softGlow)"/>
+  <text x="66" y="40" fill="#8B9691" font-size="11.5" font-weight="600" letter-spacing="1.6" class="mono">CORESENSE // PRECISION ELECTRONICS DIAGNOSTICS PLATFORM</text>
+
+  <!-- Right Header Badges -->
+  <g class="mono" font-size="11" font-weight="600">
+    <rect x="814" y="24" width="68" height="22" rx="5" fill="#0B1424" stroke="#1E3357"/>
+    <text x="848" y="39" fill="#B5CFFD" text-anchor="middle">v1.0.0</text>
+
+    <rect x="890" y="24" width="128" height="22" rx="5" fill="#071914" stroke="#164035"/>
+    <text x="954" y="39" fill="#9DE2CE" text-anchor="middle">100% FREE &amp; OPEN</text>
+
+    <rect x="1026" y="24" width="126" height="22" rx="5" fill="#1F0A0E" stroke="#4A1A23"/>
+    <text x="1089" y="39" fill="#F5B3BC" text-anchor="middle">SAFETY GATE ON</text>
+  </g>
+
+  <line x1="48" y1="56" x2="1152" y2="56" stroke="#1A1E24" stroke-width="1"/>
+
+  <!-- Left Hero Brand Block -->
+  <!-- Brand Icon Tile (Matches apps/desktop/public/coresense-mark.svg) -->
+  <g transform="translate(52, 76)">
+    <rect width="78" height="78" rx="15" fill="#06080B" stroke="#2A313A" stroke-width="1.8"/>
+    <path d="M13 13 H22 M13 13 V22" stroke="#4A525C" stroke-width="2" stroke-linecap="square"/>
+    <path d="M65 65 H56 M65 65 V56" stroke="#4A525C" stroke-width="2" stroke-linecap="square"/>
+    <path d="M13 41 H27 L33 23 L41 58 L48 33 L53 41 H65" stroke="#7BA7F7" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" class="logo-wave" filter="url(#softGlow)"/>
+    <circle cx="65" cy="41" r="3.5" fill="#5EC6A8" class="led-pulse"/>
+    <circle cx="13" cy="41" r="2.8" fill="#E8ECEA"/>
+  </g>
+
+  <!-- Title & Tagline -->
+  <text x="148" y="122" fill="#E8ECEA" font-size="52" font-weight="800" letter-spacing="-1.5" class="sans">CoreSense</text>
+  <text x="150" y="149" fill="#7BA7F7" font-size="16.5" font-weight="500" class="sans">"Understand what's happening beneath the surface."</text>
+
+  <!-- Summary Copy -->
+  <text x="52" y="188" fill="#C9D2CE" font-size="14.5" font-weight="500" class="sans">
+    AI-Powered Electronics Diagnostics, Native OS Telemetry, Technical Manual RAG &amp; Repair Intelligence
+  </text>
+  <text x="52" y="211" fill="#8B9691" font-size="12.5" class="mono">
+    Desktop (Tauri v2 · Rust)  |  Mobile (Capacitor 7 · PWA)  |  Fastify v5 API  |  Isolated Owner Console
+  </text>
+
+  <!-- Mini Metric Cards on Left -->
+  <g transform="translate(52, 228)" class="mono">
+    <rect x="0" y="0" width="146" height="34" rx="6" fill="#0A0B0C" stroke="#22262B"/>
+    <text x="10" y="13" fill="#8B9691" font-size="9">DIAGNOSTIC TOOLS</text>
+    <text x="10" y="27" fill="#7BA7F7" font-size="11" font-weight="700">9 Tools · 0 Shell</text>
+
+    <rect x="155" y="0" width="146" height="34" rx="6" fill="#0A0B0C" stroke="#22262B"/>
+    <text x="165" y="13" fill="#8B9691" font-size="9">PRIVACY BOUNDARY</text>
+    <text x="165" y="27" fill="#5EC6A8" font-size="11" font-weight="700">Dual-DB Isolated</text>
+
+    <rect x="310" y="0" width="146" height="34" rx="6" fill="#0A0B0C" stroke="#22262B"/>
+    <text x="320" y="13" fill="#8B9691" font-size="9">AI COPILOT ROUTER</text>
+    <text x="320" y="27" fill="#E5B567" font-size="11" font-weight="700">Gemini 4 + Local</text>
+
+    <rect x="465" y="0" width="147" height="34" rx="6" fill="#0A0B0C" stroke="#22262B"/>
+    <text x="475" y="13" fill="#8B9691" font-size="9">VERIFICATION</text>
+    <text x="475" y="27" fill="#E87A88" font-size="11" font-weight="700">5-State Proof</text>
+  </g>
+
+  <!-- Right Precision Oscilloscope Viewport -->
+  <rect x="680" y="70" width="468" height="192" rx="12" fill="#06080B" stroke="#262D36" stroke-width="1.5"/>
+
+  <!-- Scope Viewport Header -->
+  <circle cx="696" cy="84" r="3.5" fill="#7BA7F7" class="led-pulse-alt"/>
+  <text x="708" y="88" fill="#B4BEBA" font-size="10.5" font-weight="600" class="mono">CH1: THERMAL / CPU  •  CH2: USB-C PD RAIL</text>
+  <text x="1136" y="88" fill="#5EC6A8" font-size="10.5" font-weight="600" text-anchor="end" class="mono">MEASURED</text>
+
+  <!-- Scope Screen Interior -->
+  <rect x="688" y="96" width="452" height="114" rx="6" fill="#030507" stroke="#192029"/>
+  <rect x="688" y="96" width="452" height="114" rx="6" fill="url(#miniGrid)"/>
+  <!-- Center Crosshair -->
+  <line x1="688" y1="153" x2="1140" y2="153" stroke="#1B232E" stroke-width="1" stroke-dasharray="4 4"/>
+  <line x1="914" y1="96" x2="914" y2="210" stroke="#1B232E" stroke-width="1" stroke-dasharray="4 4"/>
+
+  <!-- Animated Traces inside Clipped Viewport -->
+  <g clip-path="url(#scopeClip)">
+    <!-- Scanning Sweep Beam -->
+    <rect x="688" y="96" width="80" height="114" fill="url(#sweepGrad)" class="scan-bar"/>
+
+    <!-- Channel 2 Base Wave (Sage Mint) -->
+    <path id="ch2Path" d="M 688 182 H 742 L 758 164 H 824 L 838 178 H 916 L 932 158 H 1002 L 1018 176 H 1086 L 1100 162 H 1140"
+          stroke="#194B3E" stroke-width="2" fill="none" stroke-linejoin="round"/>
+    <path d="M 688 182 H 742 L 758 164 H 824 L 838 178 H 916 L 932 158 H 1002 L 1018 176 H 1086 L 1100 162 H 1140"
+          stroke="#5EC6A8" stroke-width="2.4" fill="none" stroke-linejoin="round" stroke-linecap="round" class="trace-beam-2" filter="url(#softGlow)"/>
+
+    <!-- Channel 1 Primary Diagnostic Pulse Wave (Horizon Periwinkle) -->
+    <path id="ch1Path" d="M 688 148 H 748 L 764 114 L 782 178 L 798 134 L 814 148 H 890 L 906 108 L 926 184 L 944 128 L 960 148 H 1044 L 1060 116 L 1078 176 L 1094 136 L 1110 148 H 1140"
+          stroke="#1D3358" stroke-width="2.2" fill="none" stroke-linejoin="round"/>
+    <path d="M 688 148 H 748 L 764 114 L 782 178 L 798 134 L 814 148 H 890 L 906 108 L 926 184 L 944 128 L 960 148 H 1044 L 1060 116 L 1078 176 L 1094 136 L 1110 148 H 1140"
+          stroke="#7BA7F7" stroke-width="2.8" fill="none" stroke-linejoin="round" stroke-linecap="round" class="trace-beam" filter="url(#softGlow)"/>
+
+    <!-- Moving Live Probe Dot on Channel 1 -->
+    <circle r="4.5" fill="#FFFFFF" filter="url(#softGlow)">
+      <animateMotion dur="3.2s" repeatCount="indefinite" path="M 688 148 H 748 L 764 114 L 782 178 L 798 134 L 814 148 H 890 L 906 108 L 926 184 L 944 128 L 960 148 H 1044 L 1060 116 L 1078 176 L 1094 136 L 1110 148 H 1140"/>
+    </circle>
+    <!-- Moving Live Probe Dot on Channel 2 -->
+    <circle r="3.5" fill="#5EC6A8" filter="url(#softGlow)">
+      <animateMotion dur="4.4s" repeatCount="indefinite" path="M 688 182 H 742 L 758 164 H 824 L 838 178 H 916 L 932 158 H 1002 L 1018 176 H 1086 L 1100 162 H 1140"/>
+    </circle>
+  </g>
+
+  <!-- Oscilloscope Footer Telemetry Readout + Animated EQ Bars -->
+  <g>
+    <rect x="697" y="220" width="3.5" height="12" rx="1" fill="#7BA7F7" class="bar-1"/>
+    <rect x="703" y="220" width="3.5" height="12" rx="1" fill="#5EC6A8" class="bar-2"/>
+    <rect x="709" y="220" width="3.5" height="12" rx="1" fill="#E5B567" class="bar-3"/>
+    <rect x="715" y="220" width="3.5" height="12" rx="1" fill="#7BA7F7" class="bar-4"/>
+  </g>
+  <g class="mono" font-size="11">
+    <text x="730" y="230" fill="#8B9691">CPU</text>
+    <text x="756" y="230" fill="#E8ECEA" font-weight="700">14.2%</text>
+
+    <text x="808" y="230" fill="#8B9691">DIE</text>
+    <text x="834" y="230" fill="#E5B567" font-weight="700">52.0°C</text>
+
+    <text x="890" y="230" fill="#8B9691">USB-PD</text>
+    <text x="938" y="230" fill="#7BA7F7" font-weight="700">20.0V · 2.1A</text>
+
+    <text x="1038" y="230" fill="#8B9691">SMART</text>
+    <text x="1080" y="230" fill="#5EC6A8" font-weight="700">HEALTHY</text>
+  </g>
+  <text x="730" y="249" fill="#5D6A7B" font-size="10" class="mono">
+    PROVENANCE: measured | ZERO FABRICATED CONFIDENCE % | FTS5+VECTOR RAG READY
+  </text>
+
+  <!-- Bottom Full-Width Capability Ribbon -->
+  <line x1="48" y1="274" x2="1152" y2="274" stroke="#1A1E24" stroke-width="1"/>
+  <g class="mono" font-size="10.5" font-weight="600">
+    <circle cx="56" cy="293" r="3.5" fill="#7BA7F7"/>
+    <text x="67" y="297" fill="#B5CFFD">Tauri v2 + Rust sysinfo</text>
+
+    <circle cx="258" cy="293" r="3.5" fill="#5EC6A8"/>
+    <text x="269" y="297" fill="#9DE2CE">Capacitor 7 + PWA Companion</text>
+
+    <circle cx="496" cy="293" r="3.5" fill="#A78BFA"/>
+    <text x="507" y="297" fill="#DDD6FE">Gemini 4 Interactions &amp; Local Engine</text>
+
+    <circle cx="786" cy="293" r="3.5" fill="#E5B567"/>
+    <text x="797" y="297" fill="#F2D29B">Delta Sync + Conflict Guard</text>
+
+    <circle cx="1010" cy="293" r="3.5" fill="#E87A88"/>
+    <text x="1021" y="297" fill="#F5B3BC">23/23 Vitest Pass</text>
+  </g>
+</svg>
