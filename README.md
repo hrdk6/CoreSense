@@ -20,7 +20,7 @@
 </p>
 
 <p>
-  <a href="#-table-of-contents">Table of Contents</a> •
+  <a href="#table-of-contents">Table of Contents</a> •
   <a href="#2-system-architecture--monorepo-topology">Architecture</a> •
   <a href="#4-ai-repair-copilot-hardware-decoders--hybrid-rag">AI Copilot &amp; RAG</a> •
   <a href="#5-validated-diagnostic-tool-registry-collectors--simulations">Diagnostics Engine</a> •
@@ -34,7 +34,7 @@
 
 ---
 
-## 📑 Table of Contents
+## Table of Contents
 
 1. [What Is CoreSense? (Vision & Engineering Pillars)](#1-what-is-coresense)
 2. [System Architecture & Monorepo Topology](#2-system-architecture--monorepo-topology)
@@ -197,7 +197,7 @@ flowchart TB
 | [`tests`](tests) | Vitest Suite | 18-Scenario AI Diagnostic & Safety Evaluation Suite (`ai-eval.test.ts`) + End-to-End Platform, Security, Sync & Privacy Boundary Audit (`coresense.e2e.test.ts`) | Vitest 3 · In-Memory Dual SQLite | CLI (`npm test`) |
 
 <details>
-<summary><strong>📂 Click to expand Complete Annotated Monorepo Directory Tree</strong></summary>
+<summary><strong>Click to expand Complete Annotated Monorepo Directory Tree</strong></summary>
 
 ```text
 CoreSense/
@@ -284,7 +284,7 @@ CoreSense/
 
 ## 3. Applications & User Interfaces
 
-### 🖥️ CoreSense Desktop (`apps/desktop`)
+### CoreSense Desktop (`apps/desktop`)
 Built with **Tauri v2 (Rust)** + **React 19** + **Tailwind CSS v4** + **Recharts**, producing lightweight commercial installers (`.exe` NSIS, `.msi`, `.dmg`, `.deb`, `.AppImage`) using the native OS WebView instead of bundling Chromium.
 
 - **Native Rust Diagnostics Core (`src-tauri/src/lib.rs`)**: Exposes a single strictly enumerated Tauri IPC command `run_native_diagnostic(tool_id)` powered by `sysinfo 0.33` + Rust `std::net` TCP/DNS probes. Automatically falls back to the `@coresense/diagnostics-core` Host Collector when running in browser preview mode or for deep Windows CIM/WMI SMART/Event Log/ACPI counters.
@@ -298,7 +298,7 @@ Built with **Tauri v2 (Rust)** + **React 19** + **Tailwind CSS v4** + **Recharts
 - **Interactive Oscilloscope Auth Screen (`AuthView.tsx`)**: Features a live 3-channel precision scope switcher (`Thermal`, `Storage SMART`, `Power Rails`) alongside Sign In, Register, and 6-digit Password Recovery flows.
 - **Offline Cache & Telemetry**: Persists workspace snapshots to `localStorage` for instant offline boot and automatically reports scrubbed client crashes to `/api/v1/telemetry/crash`.
 
-### 📱 CoreSense Mobile (`apps/mobile`)
+### CoreSense Mobile (`apps/mobile`)
 Built with **Capacitor 7 (iOS & Android)** + **React 19** + **Installable Service Worker PWA (`sw.js`)**, sharing the exact same customer account, device library, manuals, repair cases, and delta sync protocol as Desktop.
 
 - **Five Streamlined Companion Tabs**: `Copilot`, `Phone Check`, `Devices`, `Manuals`, and `Account`.
@@ -313,7 +313,7 @@ Built with **Capacitor 7 (iOS & Android)** + **React 19** + **Installable Servic
 - **Transparent Mobile OS Disclaimers**: Explicitly informs users that third-party iOS/Android apps cannot inspect internal motherboard Wi-Fi/PMIC chips, private app memory, or unrestricted OS kernel logs — guiding structured user-assisted fault isolation instead.
 - **Zero-Friction LAN Dev Mode**: Automatically resolves `http://${window.location.hostname}:4000` in `mobileApi.ts`, paired with private-LAN CORS allowance (`192.168.*`, `10.*`, `172.16-31.*`) on the backend in non-production environments.
 
-### 🔒 Private Owner Observability Console (`apps/owner-console`)
+### Private Owner Observability Console (`apps/owner-console`)
 A completely separate standalone React 19 + Recharts web application (`http://127.0.0.1:5175`) designed solely for product operators:
 
 - **Zero Customer Data Access**: Communicates strictly with `/owner-api/v1/*` using a separate `OWNER_JWT_SECRET` and optional **RFC 6238 TOTP Multi-Factor Authentication**.
@@ -428,20 +428,20 @@ If any cloud provider returns an error or times out, CoreSense transparently fal
 
 | Provider | Model Identifier | API Protocol | Vision | Native Tool Calls | Ledger Est. Input / Output (per 1M tokens) |
 | :--- | :--- | :--- | :---: | :---: | :--- |
-| **Google Gemini** | `gemini-4-hydrogen` *(default)* | `@google/genai` Interactions API | ✅ | ✅ | \$0.35 / \$1.05 |
-| **Google Gemini** | `gemini-4-argon` | `@google/genai` Interactions API | ✅ | ✅ | \$0.75 / \$2.25 |
-| **Google Gemini** | `gemini-4-neon` | `@google/genai` Interactions API | ✅ | ✅ | \$1.25 / \$5.00 |
+| **Google Gemini** | `gemini-4-hydrogen` *(default)* | `@google/genai` Interactions API | Yes | Yes | \$0.35 / \$1.05 |
+| **Google Gemini** | `gemini-4-argon` | `@google/genai` Interactions API | Yes | Yes | \$0.75 / \$2.25 |
+| **Google Gemini** | `gemini-4-neon` | `@google/genai` Interactions API | Yes | Yes | \$1.25 / \$5.00 |
 | **Google Gemini** | `gemini-embedding-2` | `ai.models.embedContent` | — | — | \$0.025 (RAG embeddings) |
-| **OpenAI** | `gpt-4o-mini` *(default)* / `gpt-4o` | `/v1/chat/completions` | ✅ | Prompt-guided | \$0.15 / \$0.60 (`4o-mini`) · \$2.50 / \$10.00 (`4o`) |
+| **OpenAI** | `gpt-4o-mini` *(default)* / `gpt-4o` | `/v1/chat/completions` | Yes | Prompt-guided | \$0.15 / \$0.60 (`4o-mini`) · \$2.50 / \$10.00 (`4o`) |
 | **Ollama (Local)** | `llama3.2` *(or custom BYOK)* | Local OpenAI-compatible (`/v1`) | Model-dep. | Prompt-guided | \$0.00 (Free local inference) |
-| **CoreSense Local** | `coresense-diagnostic-engine-v1` | Built-in Deterministic Engine | Clarity gate | ✅ | \$0.00 (100% Offline) |
+| **CoreSense Local** | `coresense-diagnostic-engine-v1` | Built-in Deterministic Engine | Clarity gate | Yes | \$0.00 (100% Offline) |
 
 ### Verified Hardware & Electronics Technical Reference Engine (`packages/shared/src/hardwareRef.ts`)
 
 Even completely offline, CoreSense deterministically decodes hardware fault signatures without ever hallucinating schematic values or part numbers:
 
 <details>
-<summary><strong>⚡ Decoded Windows BSOD Stop Codes & Event IDs (7 Built-in Signatures)</strong></summary>
+<summary><strong>Decoded Windows BSOD Stop Codes &amp; Event IDs (7 Built-in Signatures)</strong></summary>
 
 | Stop / Event Code | Aliases Matched | Subsystem | Primary Diagnostic Focus |
 | :--- | :--- | :--- | :--- |
@@ -456,7 +456,7 @@ Even completely offline, CoreSense deterministically decodes hardware fault sign
 </details>
 
 <details>
-<summary><strong>🔬 Decoded PCB Silkscreen Component Designators (7 Prefixes + Power-Rail <code>P*</code> Variants) &amp; USB-C PD Decoder</strong></summary>
+<summary><strong>Decoded PCB Silkscreen Component Designators (7 Prefixes + Power-Rail <code>P*</code> Variants) &amp; USB-C PD Decoder</strong></summary>
 
 Regex `\b(P?[UQLCFDR])(\d{1,4})\b` automatically matches references such as `U12`, `Q301`, `C402`, `PC14`, `PL5`, `F1`, `D203`, `R104`:
 
@@ -656,10 +656,10 @@ Every simulation fixture is strictly stamped `measurementType: "simulated"`, car
 
 | Hazard Rule Code | Severity | Blocks DIY Steps? | Trigger Examples & Intervention |
 | :--- | :---: | :---: | :--- |
-| `SWOLLEN_OR_DAMAGED_LITHIUM_BATTERY` | 🔴 `critical_stop` | **YES** | Swollen, bulging, punctured, hissing, smoking, or poking Li-ion/LiPo cells → Immediate STOP, no charging/heat/prying, ventilated isolation, certified recycler/shop referral. |
-| `HIGH_VOLTAGE_PSU_CAPACITOR` | 🔴 `critical_stop` | **YES** | Opening desktop ATX/SMPS PSUs (320–400V DC bus), CRTs, microwaves, probing mains, or bypassing fuses with wire/foil → Lethal stored energy warning + licensed technician referral. |
-| `LIVE_LIQUID_DAMAGE` | 🟠 `high_risk` | **YES** | Powering on, charging, or hair-dryer/rice/oven drying spilled/wet devices → Immediate unplug/disconnect battery, 99% IPA/ultrasonic inspection before re-energizing. |
-| `BOARD_LEVEL_SOLDERING_REWORK` | 🟡 `caution` | No (Injects Warning) | Micro-soldering, BGA reflow/reball, hot-air MOSFET/IC replacement → ESD grounding, fume extraction, Kapton shielding, rail impedance checks, no household ovens/heat guns. |
+| `SWOLLEN_OR_DAMAGED_LITHIUM_BATTERY` | **CRITICAL** (`critical_stop`) | **YES** | Swollen, bulging, punctured, hissing, smoking, or poking Li-ion/LiPo cells → Immediate STOP, no charging/heat/prying, ventilated isolation, certified recycler/shop referral. |
+| `HIGH_VOLTAGE_PSU_CAPACITOR` | **CRITICAL** (`critical_stop`) | **YES** | Opening desktop ATX/SMPS PSUs (320–400V DC bus), CRTs, microwaves, probing mains, or bypassing fuses with wire/foil → Lethal stored energy warning + licensed technician referral. |
+| `LIVE_LIQUID_DAMAGE` | **HIGH RISK** (`high_risk`) | **YES** | Powering on, charging, or hair-dryer/rice/oven drying spilled/wet devices → Immediate unplug/disconnect battery, 99% IPA/ultrasonic inspection before re-energizing. |
+| `BOARD_LEVEL_SOLDERING_REWORK` | **CAUTION** (`caution`) | No (Injects Warning) | Micro-soldering, BGA reflow/reball, hot-air MOSFET/IC replacement → ESD grounding, fume extraction, Kapton shielding, rail impedance checks, no household ovens/heat guns. |
 
 <div align="center">
   <img src="docs/assets/diagnostic-pulse-divider.svg" alt="Signal Divider" width="100%" />
@@ -953,7 +953,7 @@ sequenceDiagram
 Every customer route lives under `/api/v1/*` and enforces `Authorization: Bearer <customer-jwt>` (except public health/release/auth/telemetry endpoints). Every owner route lives under `/owner-api/v1/*` and enforces `Authorization: Bearer <owner-jwt>`.
 
 <details open>
-<summary><strong>🌐 Customer Workspace Plane (<code>/api/v1/*</code>) — 48 Endpoints</strong></summary>
+<summary><strong>Customer Workspace Plane (<code>/api/v1/*</code>) — 48 Endpoints</strong></summary>
 
 #### Public Health, Release Manifest & Anonymous Telemetry
 | Method | Endpoint | Auth | Description |
@@ -1031,7 +1031,7 @@ Every customer route lives under `/api/v1/*` and enforces `Authorization: Bearer
 </details>
 
 <details>
-<summary><strong>🔒 Isolated Owner Observability Plane (<code>/owner-api/v1/*</code>) — 14 Endpoints (Zero Customer DB Access)</strong></summary>
+<summary><strong>Isolated Owner Observability Plane (<code>/owner-api/v1/*</code>) — 14 Endpoints (Zero Customer DB Access)</strong></summary>
 
 | Method | Endpoint | Auth | Description |
 | :--- | :--- | :---: | :--- |
@@ -1101,7 +1101,7 @@ Every customer route lives under `/api/v1/*` and enforces `Authorization: Bearer
 
 ### Default Local Owner Console Credentials
 
-> ⚠️ **Always change these via `.env` before deploying to production.**
+> **Warning:** Always change these via `.env` before deploying to production.
 
 - **URL:** `http://127.0.0.1:5175`
 - **Email:** `owner@coresense.app` *(override via `OWNER_INITIAL_EMAIL`)*
@@ -1134,21 +1134,21 @@ Every customer route lives under `/api/v1/*` and enforces `Authorization: Bearer
 Copy [`.env.example`](.env.example) to `.env` in the repository root or `apps/api/.env`.
 
 <details>
-<summary><strong>⚙️ Click to expand Full Environment Variable Matrix (23 Variables)</strong></summary>
+<summary><strong>Click to expand Full Environment Variable Matrix (23 Variables)</strong></summary>
 
 | Variable | Default Value | Prod Required | Purpose & Unset Behavior |
 | :--- | :--- | :---: | :--- |
-| `NODE_ENV` | `development` | ✅ | Set `production` to disable `devRecoveryCode` responses & private-LAN wildcard CORS. |
-| `HOST` | `127.0.0.1` | ✅ | Bind address (`0.0.0.0` in Docker/cloud or LAN mobile dev). |
+| `NODE_ENV` | `development` | Yes | Set `production` to disable `devRecoveryCode` responses & private-LAN wildcard CORS. |
+| `HOST` | `127.0.0.1` | Yes | Bind address (`0.0.0.0` in Docker/cloud or LAN mobile dev). |
 | `PORT` | `4000` | Optional | Fastify HTTP listening port. |
-| `CORS_ORIGINS` | Localhost + Tauri origins | ✅ | Comma-separated allowed browser/WebView origins. |
+| `CORS_ORIGINS` | Localhost + Tauri origins | Yes | Comma-separated allowed browser/WebView origins. |
 | `JWT_SECRET` | Dev placeholder | **CRITICAL** | 64-byte random secret signing `coresense-customer` JWTs & anonymous user HMAC hashes. |
 | `OWNER_JWT_SECRET` | Dev placeholder | **CRITICAL** | Completely separate 64-byte random secret signing `coresense-owner` JWTs. |
 | `ENCRYPTION_KEY` | Dev placeholder | **CRITICAL** | 32+ byte secret key used for AES-256-GCM encryption of user BYOK provider keys. |
-| `DATA_DIR` | `./apps/api/data` | ✅ | Persistent disk directory storing `coresense_customer.db`, `coresense_owner.db`, and `uploads/`. |
+| `DATA_DIR` | `./apps/api/data` | Yes | Persistent disk directory storing `coresense_customer.db`, `coresense_owner.db`, and `uploads/`. |
 | `CUSTOMER_DATABASE_URL` | *(unset)* | Optional | PostgreSQL connection string for `customer_workspace` schema (see `migrations/postgres-production.sql`). |
 | `OWNER_DATABASE_URL` | *(unset)* | Optional | Separate PostgreSQL connection string for `owner_observability` schema. |
-| `OWNER_INITIAL_EMAIL` | `owner@coresense.app` | ✅ | Bootstrapped Owner Console admin email on first empty-DB startup. |
+| `OWNER_INITIAL_EMAIL` | `owner@coresense.app` | Yes | Bootstrapped Owner Console admin email on first empty-DB startup. |
 | `OWNER_INITIAL_PASSWORD` | `CoreSenseOwner#2026!` | **CRITICAL** | Bootstrapped Owner Console password (hashed with `scrypt` on first startup). |
 | `GEMINI_API_KEY` *(or `GOOGLE_API_KEY`)* | *(unset)* | Optional | Enables live **Gemini 4 Interactions API** reasoning, board photo vision, and `gemini-embedding-2` RAG. Falls back cleanly to Local Diagnostic Engine when unset. |
 | `GEMINI_MODEL` | `gemini-4-hydrogen` | Optional | Default Gemini text/tool-calling model (`gemini-4-hydrogen`, `gemini-4-argon`, `gemini-4-neon`). |
@@ -1182,7 +1182,7 @@ npm run typecheck # Strict TypeScript verification across all 5 workspaces
 | Test Suite | Tests | Verified Guarantees |
 | :--- | :---: | :--- |
 | **[`tests/ai-eval.test.ts`](tests/ai-eval.test.ts)** | **16 tests** *(Scenarios 1–18)* | • **Scenarios 1–8**: High CPU (`SearchIndexer`), Critical RAM (`95.6%`), Low Disk (`98.2%`), Predictive SMART SSD Failure (backup + pro referral), Wi-Fi Down, DNS Failure w/ IP OK (proposes approval-gated `flush_dns_cache`), Battery Wear (`54%`), Thermal Overheating (`97.5°C`)<br/>• **Scenario 9**: USB-C charging cable/port/PD isolation<br/>• **Scenarios 10 & 11**: App Crash Loop (`Event 1000` / `nvoglv64.dll`) & Windows Kernel-Power `41` / WHEA `0x124`<br/>• **Scenario 12**: Mobile OS Wi-Fi inspection restriction honesty<br/>• **Scenario 13**: Low-res `1×1` PNG board photo clarity rejection + macro request<br/>• **Scenarios 14 & 15**: Ambiguous motherboard replacement second-opinion & vague symptom intake<br/>• **Scenario 16**: Critical safety hard-blocks on swollen Li-ion puncture & PSU fuse foil bypass<br/>• **Scenario 17**: 5-State Resolution Verification (`unable_to_verify` without fresh scan → `verified_resolved` with before/after diff)<br/>• **Scenario 18**: Combined BSOD `0x00000124` + PCB `Q301`/`F1` + USB-C `5V 0.00A` decoding + multi-turn mobile Wi-Fi hypothesis evolution<br/>• **Global Invariant**: Every AI turn is asserted against `/\b\d{1,3}%\s*confiden/i` to guarantee **zero fabricated confidence percentages**. |
-| **[`tests/coresense.e2e.test.ts`](tests/coresense.e2e.test.ts)** | **7 suites** | 1. Distinct installer download vs idempotent first-launch activation tracking<br/>2. Account registration, AES-256-GCM BYOK encryption-at-rest check, 6-digit password recovery, live AI test & release manifest<br/>3. Genuine host CPU & RAM measurement + `403` block on arbitrary shell (`rm_rf_shell_exec`) & unapproved `flush_dns_cache`<br/>4. Cross-account workspace isolation (User B cannot view or delete User A's devices)<br/>5. Windows PE binary (`MZ`) upload rejection + multi-page manual indexing + prompt-injection `[REDACTED_UNTRUSTED_DIRECTIVE]` neutralization<br/>6. Desktop ↔ Mobile Delta Sync (`sinceSeq` pull, `baseRevision` push, stale push conflict detection)<br/>7. 100% free & roleless assertion (`404` on removed billing/revenue routes), Customer JWT `403` rejection on Owner API, RFC 6238 TOTP MFA enrollment, full Owner API sweep, **hard PII-leak audit across `coresense_owner.db`**, full account JSON export, and permanent cascading deletion. |
+| **[`tests/coresense.e2e.test.ts`](tests/coresense.e2e.test.ts)** | **7 suites** | 1. Distinct installer download vs idempotent first-launch activation tracking<br/>2. Account registration, AES-256-GCM BYOK encryption-at-rest check, 6-digit password recovery, live AI test & release manifest<br/>3. Genuine host CPU & RAM measurement + `403` block on arbitrary shell (`rm_rf_shell_exec`) & unapproved `flush_dns_cache`<br/>4. Cross-account workspace isolation (User B cannot view or delete User A's devices)<br/>5. Windows PE binary (`MZ`) upload rejection + multi-page manual indexing + prompt-injection `[REDACTED_UNTRUSTED_DIRECTIVE]` neutralization<br/>6. Desktop-to-Mobile Delta Sync (`sinceSeq` pull, `baseRevision` push, stale push conflict detection)<br/>7. 100% free & roleless assertion (`404` on removed billing/revenue routes), Customer JWT `403` rejection on Owner API, RFC 6238 TOTP MFA enrollment, full Owner API sweep, **hard PII-leak audit across `coresense_owner.db`**, full account JSON export, and permanent cascading deletion. |
 
 <div align="center">
   <img src="docs/assets/diagnostic-pulse-divider.svg" alt="Signal Divider" width="100%" />
