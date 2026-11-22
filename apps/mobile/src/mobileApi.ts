@@ -1,3 +1,4 @@
+import { Capacitor } from '@capacitor/core';
 import { Device } from '@capacitor/device';
 import { Network } from '@capacitor/network';
 import { CORESENSE_VERSION, type Platform } from '@coresense/shared';
@@ -571,9 +572,78 @@ export async function runMobileSocStressTest(
   };
 }
 
+export interface MobileReleaseInfo {
+  version: string;
+  apkFilename: string;
+  apkDownloadUrl: string;
+  releaseUrl: string;
+  notes: string;
+}
+
+export function isNativeMobileApp(): boolean {
+  try {
+    return Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
+
+export function isNewerMobileSemver(candidate: string, current: string): boolean {
+  const c = candidate.replace(/^v/i, '').split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const cur = current.replace(/^v/i, '').split('.').map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((c[i] ?? 0) > (cur[i] ?? 0)) return true;
+    if ((c[i] ?? 0) < (cur[i] ?? 0)) return false;
+  }
+  return false;
+}
+
+const FALLBACK_MOBILE_RELEASE: MobileReleaseInfo = {
+  version: CORESENSE_VERSION,
+  apkFilename: `CoreSense_${CORESENSE_VERSION}_android.apk`,
+  apkDownloadUrl: `https://github.com/hrdk6/CoreSense/releases/latest/download/CoreSense_${CORESENSE_VERSION}_android.apk`,
+  releaseUrl: 'https://github.com/hrdk6/CoreSense/releases/latest',
+  notes: `CoreSense Android v${CORESENSE_VERSION} signed native APK.`,
+};
+
+export async function fetchLatestMobileRelease(): Promise<MobileReleaseInfo> {
+  try {
+    const res = await mobileApiRequest<{
+      mobile?: Partial<MobileReleaseInfo>;
+    }>('/api/v1/releases/latest', { skipAuth: true });
+    const m = res.mobile;
+    const version = m?.version || CORESENSE_VERSION;
+    const apkFilename = m?.apkFilename || `CoreSense_${version}_android.apk`;
+    return {
+      version,
+      apkFilename,
+      apkDownloadUrl:
+        m?.apkDownloadUrl || `https://github.com/hrdk6/CoreSense/releases/latest/download/${apkFilename}`,
+      releaseUrl: m?.releaseUrl || 'https://github.com/hrdk6/CoreSense/releases/latest',
+      notes: m?.notes || FALLBACK_MOBILE_RELEASE.notes,
+    };
+  } catch {
+    return FALLBACK_MOBILE_RELEASE;
+  }
+}
+
+export function trackAndroidApkDownload(version: string): void {
+  void mobileApiRequest('/api/v1/downloads/track', {
+    method: 'POST',
+    skipAuth: true,
+    body: {
+      platform: 'android',
+      appVersion: version,
+      channel: 'github',
+      architecture: 'universal',
+    },
+  }).catch(() => {});
+}
+
 export async function reportMobileActivation(): Promise<void> {
   try {
     const info = await detectMobilePlatform();
+    const isNative = isNativeMobileApp();
     await mobileApiRequest('/api/v1/telemetry/activation', {
       method: 'POST',
       skipAuth: true,
@@ -581,7 +651,7 @@ export async function reportMobileActivation(): Promise<void> {
         installId: getInstallId(),
         platform: info.platform,
         appVersion: CORESENSE_VERSION,
-        channel: info.platform === 'ios' ? 'app_store' : info.platform === 'android' ? 'google_play' : 'direct',
+        channel: isNative ? 'github' : 'direct',
       },
     });
   } catch {}

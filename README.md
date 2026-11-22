@@ -9,6 +9,7 @@
 </p>
 
 <p>
+  <a href="#download-coresense-100-free--unlimited"><strong>Download Apps</strong></a> •
   <a href="#table-of-contents">Table of Contents</a> •
   <a href="#2-system-architecture--monorepo-topology">Architecture</a> •
   <a href="#4-ai-repair-copilot-hardware-decoders--hybrid-rag">AI Copilot &amp; RAG</a> •
@@ -20,6 +21,22 @@
 </p>
 
 </div>
+
+---
+
+## Download CoreSense (100% Free & Unlimited)
+
+Every release binary is built automatically by GitHub Actions and cryptographically signed (APK Signature Scheme v1/v2/v3 for Android, Ed25519 auto-update signatures for Desktop).
+
+| Platform | Download | Notes |
+| :--- | :--- | :--- |
+| **Android (Signed Native APK)** | [**Download Latest `.apk`**](https://github.com/hrdk6/CoreSense/releases/latest) | Free direct install — no Google Play required. Tap the `.apk`, allow *Install unknown apps* once if prompted. Future versions upgrade in-place automatically with the same signing key. |
+| **Mobile Web / iOS (PWA)** | [**Launch CoreSense Mobile Web**](https://coresense-mobile-pwa.onrender.com) | Works instantly on iOS Safari & Android Chrome (*Add to Home Screen* supported). |
+| **Windows (x64)** | [**Download `.exe` / `.msi`**](https://github.com/hrdk6/CoreSense/releases/latest) | Includes signed 1-click in-app auto-updates (`latest.json`). |
+| **macOS (Apple Silicon)** | [**Download `.dmg`**](https://github.com/hrdk6/CoreSense/releases/latest) | Includes signed 1-click in-app auto-updates (`latest.json`). |
+| **Linux (x64)** | [**Download `.AppImage` / `.deb`**](https://github.com/hrdk6/CoreSense/releases/latest) | Includes signed 1-click in-app auto-updates (`latest.json`). |
+
+> **All Releases & SHA-256 Checksums:** [`github.com/hrdk6/CoreSense/releases/latest`](https://github.com/hrdk6/CoreSense/releases/latest)
 
 ---
 
@@ -1197,13 +1214,14 @@ flowchart LR
             WIN["windows-latest<br/>NSIS (.exe) + MSI (.msi)"]
             MAC["macos-latest<br/>Universal (.dmg)"]
             LIN["ubuntu-22.04<br/>WebKitGTK · (.deb) + (.AppImage)"]
+            AND["ubuntu-latest<br/>Capacitor 7 · Signed Android (.apk)"]
         end
     end
 
     subgraph DIST["COMMERCIAL DISTRIBUTION & CLOUD TARGETS"]
-        REL_REPO["Public Binaries Release Repo<br/>hrdk6/CoreSense-Releases<br/>(softprops/action-gh-release)"]
+        REL_REPO["GitHub Releases (Direct Public)<br/>hrdk6/CoreSense/releases<br/>Desktop + Android APK + latest.json"]
         CLOUD["Managed Container Cloud<br/>Dockerfile (Node 24 Non-Root)<br/>Render · Fly.io · Railway<br/>PostgreSQL Dual-Schema RBAC"]
-        STORES["Mobile App Stores & PWA<br/>Capacitor 7 Android (.aab)<br/>Capacitor 7 iOS (.ipa)<br/>Installable Service Worker PWA"]
+        STORES["Mobile Web & PWA<br/>Installable Service Worker PWA<br/>iOS Safari + Android Chrome"]
     end
 
     PUSH --> VERIFY
@@ -1211,13 +1229,15 @@ flowchart LR
     VERIFY -->|"On v* Tags Only"| WIN
     VERIFY -->|"On v* Tags Only"| MAC
     VERIFY -->|"On v* Tags Only"| LIN
+    VERIFY -->|"On v* Tags Only"| AND
 
-    WIN -->|"RELEASE_REPO_TOKEN"| REL_REPO
-    MAC -->|"RELEASE_REPO_TOKEN"| REL_REPO
-    LIN -->|"RELEASE_REPO_TOKEN"| REL_REPO
+    WIN -->|"GITHUB_TOKEN"| REL_REPO
+    MAC -->|"GITHUB_TOKEN"| REL_REPO
+    LIN -->|"GITHUB_TOKEN"| REL_REPO
+    AND -->|"GITHUB_TOKEN"| REL_REPO
 
     VERIFY -.->|"Container / Blueprint Deploy"| CLOUD
-    VERIFY -.->|"cap:android / cap:ios / vite build"| STORES
+    VERIFY -.->|"vite build"| STORES
 
     classDef trigger fill:#1e3a8a,stroke:#60a5fa,stroke-width:2px,color:#ffffff
     classDef verify fill:#065f46,stroke:#34d399,stroke-width:2.5px,color:#ffffff
@@ -1242,8 +1262,8 @@ flowchart LR
 
 | Target | Configuration File | Key Capabilities |
 | :--- | :--- | :--- |
-| **Desktop Installers (Win/macOS/Linux)** | [`apps/desktop/src-tauri/tauri.conf.json`](apps/desktop/src-tauri/tauri.conf.json) & [`.github/workflows/ci-release.yml`](.github/workflows/ci-release.yml) | Compiles `com.coresense.desktop` v1.0.0 (`NSIS .exe`, `.msi`, `.dmg`, `.deb`, `.AppImage`) and publishes release binaries to `hrdk6/CoreSense-Releases` on `v*` git tags. Supports EV Authenticode, Apple Gatekeeper notarization, and signed Tauri auto-updates. |
-| **Android & iOS Native Apps** | [`apps/mobile/capacitor.config.ts`](apps/mobile/capacitor.config.ts) | Capacitor 7 native bridges (`com.coresense.mobile`) via `cap:android` / `cap:ios` declaring strictly scoped `CAMERA`, `RECORD_AUDIO`, and `ACCESS_NETWORK_STATE` permissions. |
+| **Desktop Installers (Win/macOS/Linux)** | [`apps/desktop/src-tauri/tauri.conf.json`](apps/desktop/src-tauri/tauri.conf.json) & [`.github/workflows/ci-release.yml`](.github/workflows/ci-release.yml) | Compiles `com.coresense.desktop` (`NSIS .exe`, `.msi`, `.dmg`, `.deb`, `.AppImage`) and auto-publishes Ed25519-signed installers + `latest.json` directly to `hrdk6/CoreSense` Releases on every `v*` git tag. |
+| **Android Native APK & Mobile Web PWA** | [`apps/mobile/capacitor.config.ts`](apps/mobile/capacitor.config.ts) & [`apps/mobile/android/app/build.gradle`](apps/mobile/android/app/build.gradle) | Compiles and signs `com.coresense.mobile` (`CoreSense_*_android.apk`, APK Signature Scheme v1/v2/v3) on every `v*` tag with scoped `CAMERA`, `RECORD_AUDIO`, and `ACCESS_NETWORK_STATE` permissions — published directly to GitHub Releases with zero Play Store fees. |
 | **Production Docker Image** | [`Dockerfile`](Dockerfile) | Multi-stage `node:24-slim` build, non-root `coresense` user, persistent `/app/data` volume, and built-in 30s `HEALTHCHECK` against `/api/v1/health`. |
 | **Render Blueprint** | [`render.yaml`](render.yaml) | One-click provisioning of `coresense-api` (10 GB persistent disk + auto-generated secrets), `coresense-mobile-pwa` static site, and separate `coresense-owner-console` static site. |
 | **Fly.io** | [`fly.toml`](fly.toml) | TLS-enforced container (`force_https = true`), persistent `coresense_data` volume at `/app/data`, always-on minimum machine with 30s HTTP health checks. |

@@ -236,8 +236,8 @@ export class OwnerDatabase {
     }
 
     const defaultConfig: Record<string, unknown> = {
-      latestDesktopVersion: '1.2.1',
-      latestMobileVersion: '1.2.1',
+      latestDesktopVersion: '1.3.0',
+      latestMobileVersion: '1.3.0',
       maintenanceMode: false,
       telemetryRetentionDays: 365,
     };

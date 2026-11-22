@@ -26,8 +26,6 @@ jobs:
     name: Build Signed Desktop Installers (${{ matrix.platform }})
     needs: verify
     if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -66,22 +64,93 @@ jobs:
           name: coresense-desktop-${{ matrix.platform }}
           path: apps/desktop/src-tauri/target/release/bundle/**/*
 
-  assemble-updater-release:
-    name: Assemble Signed Updater Manifest (latest.json) & Publish
-    needs: release-desktop
+  release-android:
+    name: Build Signed Android APK
+    needs: verify
     if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm --workspace @coresense/shared run build
+      - name: Build Production Mobile Web Bundle
+        working-directory: apps/mobile
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: npm run build
+      - name: Sync Capacitor Android Project
+        working-directory: apps/mobile
+        run: npx cap sync android
+      - name: Compile & Sign Release Android APK
+        working-directory: apps/mobile/android
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG_NAME#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${VERSION}"
+          VERSION_CODE=$(( ${MAJOR:-1} * 10000 + ${MINOR:-0} * 100 + ${PATCH:-0} ))
+          echo "Building signed Android APK for v${VERSION} (versionCode=${VERSION_CODE})"
+
+          KEYSTORE_FILE="/tmp/coresense-release.p12"
+          trap 'rm -f "${KEYSTORE_FILE}"' EXIT
+          echo "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${KEYSTORE_FILE}"
+
+          export ANDROID_KEYSTORE_PATH="${KEYSTORE_FILE}"
+          chmod +x ./gradlew
+          ./gradlew assembleRelease \
+            -PversionName="${VERSION}" \
+            -PversionCode="${VERSION_CODE}" \
+            --no-daemon
+
+          mkdir -p "${GITHUB_WORKSPACE}/android-dist"
+          OUT_APK="${GITHUB_WORKSPACE}/android-dist/CoreSense_${VERSION}_android.apk"
+          cp app/build/outputs/apk/release/app-release.apk "${OUT_APK}"
+
+          # Verify cryptographic APK signature (v1/v2/v3)
+          APKSIGNER="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -n "${APKSIGNER}" ]; then
+            "${APKSIGNER}" verify --print-certs "${OUT_APK}"
+          fi
+          ls -lh "${OUT_APK}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coresense-android-apk
+          path: android-dist/*.apk
+
+  assemble-updater-release:
+    name: Assemble Signed Release & Publish to GitHub Releases
+    needs: [release-desktop, release-android]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: raw-artifacts
-      - name: Collect Installers & Generate Signed latest.json
+      - name: Collect All Installers, Android APK & Generate Signed latest.json
         env:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           node -e '
             const fs = require("node:fs");
             const path = require("node:path");
+            const crypto = require("node:crypto");
             const tag = process.env.TAG_NAME;
             const version = tag.replace(/^v/, "");
             const outDir = "release-assets";
@@ -101,14 +170,15 @@ jobs:
             const copied = [];
             for (const f of files) {
               const name = path.basename(f);
-              if (/\.(exe|msi|dmg|deb|AppImage|tar\.gz|sig)$/i.test(name)) {
+              // Exclude internal Debian staging tarballs (control.tar.gz, data.tar.gz) while keeping .app.tar.gz
+              if (/(?:\.(?:exe|msi|dmg|deb|AppImage|apk|sig)|\.app\.tar\.gz)$/i.test(name)) {
                 const dest = path.join(outDir, name);
                 fs.copyFileSync(f, dest);
                 copied.push(name);
               }
             }
 
-            const baseUrl = `https://github.com/hrdk6/CoreSense-Releases/releases/download/${tag}`;
+            const baseUrl = `https://github.com/hrdk6/CoreSense/releases/download/${tag}`;
             const platforms = {};
 
             const findSigned = (pattern) => {
@@ -137,12 +207,23 @@ jobs:
 
             const manifest = {
               version,
-              notes: `CoreSense ${tag} — Signed 1-Click Desktop Auto-Updates, Hybrid Vector RAG (768d gemini-embedding-2), Real-Time SSE Streaming Gemini 4 Copilot, Full Hardware Diagnostics, and AI/ML Evaluation Lab.`,
+              notes: `CoreSense ${tag} — Signed Native Android APK, Signed 1-Click Desktop Auto-Updates, Hybrid Vector RAG (768d gemini-embedding-2), Real-Time SSE Streaming Gemini 4 Copilot, Full Hardware Diagnostics, and Interactive AI/ML Evaluation Lab.`,
               pub_date: new Date().toISOString(),
               platforms,
             };
 
             fs.writeFileSync(path.join(outDir, "latest.json"), JSON.stringify(manifest, null, 2));
+
+            // Generate SHA-256 checksums for all primary downloadable binaries
+            const checksumLines = copied
+              .filter((n) => !n.endsWith(".sig"))
+              .sort()
+              .map((n) => {
+                const hash = crypto.createHash("sha256").update(fs.readFileSync(path.join(outDir, n))).digest("hex");
+                return `${hash}  ${n}`;
+              });
+            fs.writeFileSync(path.join(outDir, "SHA256SUMS.txt"), checksumLines.join("\n") + "\n");
+
             console.log("Generated latest.json:", JSON.stringify(manifest, null, 2));
             console.log("Total release assets:", fs.readdirSync(outDir));
           '
@@ -150,13 +231,24 @@ jobs:
         with:
           name: coresense-release-bundle-${{ github.ref_name }}
           path: release-assets/*
-      - name: Publish Binaries & Signed latest.json to Public Binaries-Only Release Repo
-        if: env.RELEASE_REPO_TOKEN != ''
-        env:
-          RELEASE_REPO_TOKEN: ${{ secrets.RELEASE_REPO_TOKEN }}
+      - name: Publish Signed Desktop Installers, Android APK & latest.json to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          repository: hrdk6/CoreSense-Releases
-          token: ${{ secrets.RELEASE_REPO_TOKEN }}
-          generate_release_notes: false
+          name: CoreSense ${{ github.ref_name }}
+          body: |
+            ## CoreSense ${{ github.ref_name }}
+
+            100% free, unlimited AI-powered electronics diagnostics & repair intelligence across **Android, Windows, macOS, Linux, and Mobile Web**.
+
+            ### Direct Downloads
+            - **Android (Signed Native APK):** Download `CoreSense_*_android.apk` below → tap to install (enable *Install unknown apps* once if prompted). Future releases upgrade cleanly in place with the same signing key.
+            - **Windows (x64):** Download `*-setup.exe` (recommended) or `*.msi`. Existing desktop installs receive signed 1-click in-app updates automatically.
+            - **macOS (Apple Silicon):** Download `*.dmg`.
+            - **Linux (x64):** Download `*.AppImage` or `*.deb`.
+            - **Mobile Web (iOS / Any Browser):** [coresense-mobile-pwa.onrender.com](https://coresense-mobile-pwa.onrender.com)
+
+            ### Integrity & Signatures
+            - Desktop auto-updates are verified via Ed25519 signatures in `latest.json`.
+            - Android APK is cryptographically signed (APK Signature Scheme v1/v2/v3).
+            - Binary checksums are included in `SHA256SUMS.txt`.
           files: release-assets/*

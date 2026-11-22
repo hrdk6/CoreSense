@@ -152,8 +152,10 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       url: '/api/v1/releases/latest',
     });
     expect(releaseRes.statusCode).toBe(200);
-    expect(releaseRes.json().desktop.version).toBe('1.2.1');
-    expect(releaseRes.json().desktop.updaterManifestUrl).toContain('CoreSense-Releases/releases/latest/download/latest.json');
+    expect(releaseRes.json().desktop.version).toBe('1.3.0');
+    expect(releaseRes.json().desktop.updaterManifestUrl).toContain('hrdk6/CoreSense/releases/latest/download/latest.json');
+    expect(releaseRes.json().mobile.version).toBe('1.3.0');
+    expect(releaseRes.json().mobile.apkDownloadUrl).toContain('hrdk6/CoreSense/releases/latest/download/CoreSense_1.3.0_android.apk');
   });
 
   it('3. Runs genuine local Windows/OS diagnostics and strictly enforces tool registry security & approval gates', async () => {

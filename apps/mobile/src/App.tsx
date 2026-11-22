@@ -15,24 +15,30 @@ import {
   RefreshCw,
   Search,
   Send,
+  Smartphone,
   Sun,
   User,
   Wrench,
   X,
 } from 'lucide-react';
-import type { StructuredPcbInspection } from '@coresense/shared';
+import { CORESENSE_VERSION, type StructuredPcbInspection } from '@coresense/shared';
 import {
+  type MobileReleaseInfo,
   detectMobilePlatform,
+  fetchLatestMobileRelease,
   getApiBaseUrl,
   getInstallId,
   getMobileSyncSeq,
   getMobileToken,
+  isNativeMobileApp,
+  isNewerMobileSemver,
   mobileApiRequest,
   mobileStreamSsePost,
   reportMobileActivation,
   setMobileApiBaseUrl,
   setMobileSyncSeq,
   setMobileToken,
+  trackAndroidApkDownload,
 } from './mobileApi';
 import {
   getMobileSupabaseClient,
@@ -159,6 +165,43 @@ export const App: React.FC = () => {
   const [newManualTitle, setNewManualTitle] = useState('');
   const [newManualText, setNewManualText] = useState('');
   const [mobileServerUrl, setMobileServerUrl] = useState(() => getApiBaseUrl());
+  const [mobileRelease, setMobileRelease] = useState<MobileReleaseInfo | null>(null);
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateCheckMsg, setUpdateCheckMsg] = useState<string | null>(null);
+  const nativeApp = isNativeMobileApp();
+  const hasNewerApk = Boolean(
+    mobileRelease && isNewerMobileSemver(mobileRelease.version, CORESENSE_VERSION),
+  );
+
+  const handleCheckMobileUpdate = async () => {
+    setCheckingUpdate(true);
+    setUpdateCheckMsg(null);
+    try {
+      const rel = await fetchLatestMobileRelease();
+      setMobileRelease(rel);
+      if (isNewerMobileSemver(rel.version, CORESENSE_VERSION)) {
+        setUpdateBannerDismissed(false);
+        setUpdateCheckMsg(`Update available: CoreSense v${rel.version} signed APK.`);
+      } else {
+        setUpdateCheckMsg(`CoreSense v${CORESENSE_VERSION} is up to date.`);
+      }
+    } catch {
+      setUpdateCheckMsg('Unable to check for updates right now.');
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const handleDownloadApk = (release?: MobileReleaseInfo | null) => {
+    const target = release ?? mobileRelease;
+    const version = target?.version || CORESENSE_VERSION;
+    const url =
+      target?.apkDownloadUrl ||
+      `https://github.com/hrdk6/CoreSense/releases/latest/download/CoreSense_${version}_android.apk`;
+    trackAndroidApkDownload(version);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
 
   const camRef = useRef<HTMLInputElement | null>(null);
 
@@ -212,6 +255,9 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     reportMobileActivation();
+    fetchLatestMobileRelease()
+      .then((rel) => setMobileRelease(rel))
+      .catch(() => {});
     let unsub: () => void = () => {};
     initMobileSupabaseSync({
       onSession: (session) => {
@@ -585,6 +631,28 @@ export const App: React.FC = () => {
               {authMode === 'login' ? 'Sign in' : 'Create mobile account'}
             </button>
           </form>
+
+          {!nativeApp && (
+            <div className="pt-3 border-t border-[var(--cs-border)] space-y-2">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-[var(--cs-ink)] flex items-center gap-1.5">
+                  <Smartphone className="h-3.5 w-3.5 text-[var(--cs-accent)]" />
+                  <span>Native Android App</span>
+                </span>
+                <span className="font-mono text-[10px] text-[var(--cs-ink-muted)]">
+                  v{mobileRelease?.version || CORESENSE_VERSION} · Signed APK
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleDownloadApk(mobileRelease)}
+                className="cs-btn-secondary w-full py-2 text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Download className="h-3.5 w-3.5 text-[var(--cs-accent)]" />
+                <span>Download CoreSense Android (.apk)</span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -624,6 +692,35 @@ export const App: React.FC = () => {
             </button>
           </div>
         </header>
+
+        {hasNewerApk && !updateBannerDismissed && mobileRelease && (
+          <div className="shrink-0 px-4 py-2 bg-[var(--cs-accent-soft)] border-b border-[var(--cs-accent-border)] flex items-center justify-between gap-2 text-xs">
+            <div className="min-w-0">
+              <span className="font-semibold text-[var(--cs-ink)]">
+                Update available: v{mobileRelease.version}
+              </span>
+              <span className="text-[var(--cs-ink-muted)] ml-1.5 text-[11px]">Signed Android APK</span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleDownloadApk(mobileRelease)}
+                className="cs-btn-primary px-2.5 py-1 text-[11px] flex items-center gap-1 cursor-pointer"
+              >
+                <Download className="h-3 w-3" />
+                <span>Download</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setUpdateBannerDismissed(true)}
+                aria-label="Dismiss update banner"
+                className="text-[var(--cs-ink-muted)] hover:text-[var(--cs-ink)] cursor-pointer"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Main Viewport Body */}
         <main
@@ -1104,6 +1201,53 @@ export const App: React.FC = () => {
                     <div className="text-[10px] text-[var(--cs-ink-muted)]">Manuals</div>
                     <div className="font-mono text-sm font-bold text-[var(--cs-ink)] cs-tabular">{docs.length}</div>
                   </div>
+                </div>
+              </div>
+
+              <div className="cs-panel p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-[var(--cs-ink)] flex items-center gap-1.5">
+                    <Smartphone className="h-3.5 w-3.5 text-[var(--cs-accent)]" />
+                    <span>Android App &amp; Updates</span>
+                  </div>
+                  <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-[var(--cs-canvas)] border border-[var(--cs-border)] text-[var(--cs-ink-muted)]">
+                    v{CORESENSE_VERSION} · {nativeApp ? 'APK' : 'PWA'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[var(--cs-ink-muted)] leading-relaxed">
+                  {nativeApp
+                    ? 'Installed via cryptographically signed CoreSense Android APK. Tap below to check GitHub Releases for newer signed updates.'
+                    : 'Install the signed native Android .apk directly (100% free, zero Play Store required) for offline access, native camera/sensors, and home-screen launch.'}
+                </p>
+                {updateCheckMsg && (
+                  <div className="rounded-md bg-[var(--cs-canvas)] border border-[var(--cs-border)] px-2.5 py-1.5 text-[11px] text-[var(--cs-ink-2)]">
+                    {updateCheckMsg}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  {(!nativeApp || hasNewerApk) && (
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadApk(mobileRelease)}
+                      className="cs-btn-primary flex-1 py-2 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>
+                        {hasNewerApk && mobileRelease
+                          ? `Download v${mobileRelease.version} APK`
+                          : `Download Android APK (v${mobileRelease?.version || CORESENSE_VERSION})`}
+                      </span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={checkingUpdate}
+                    onClick={handleCheckMobileUpdate}
+                    className={`cs-btn-secondary ${nativeApp && !hasNewerApk ? 'flex-1' : 'px-3'} py-2 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-60`}
+                  >
+                    <RefreshCw className={`h-3.5 w-3.5 ${checkingUpdate ? 'animate-spin' : ''}`} />
+                    <span>{nativeApp && !hasNewerApk ? 'Check for App Updates' : 'Check'}</span>
+                  </button>
                 </div>
               </div>
 

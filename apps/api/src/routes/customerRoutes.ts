@@ -294,14 +294,15 @@ export function registerCustomerRoutes(
     const map = new Map(cfgRows.map((r) => [r.key, JSON.parse(r.value_json)]));
     const desktopVersion = pickHigherSemver(CORESENSE_VERSION, String(map.get('latestDesktopVersion') || CORESENSE_VERSION));
     const mobileVersion = pickHigherSemver(CORESENSE_VERSION, String(map.get('latestMobileVersion') || CORESENSE_VERSION));
+    const apkFilename = `CoreSense_${mobileVersion}_android.apk`;
     return {
       product: 'CoreSense',
       desktop: {
         version: desktopVersion,
-        releaseDate: '2026-11-22',
-        releaseUrl: `https://github.com/hrdk6/CoreSense-Releases/releases/latest`,
-        updaterManifestUrl: 'https://github.com/hrdk6/CoreSense-Releases/releases/latest/download/latest.json',
-        notes: `CoreSense v${desktopVersion} — Signed 1-Click Desktop Auto-Updates, Hybrid Vector + Lexical RRF RAG (768d gemini-embedding-2), Real-Time SSE Streaming Gemini 4 Copilot, Interactive AI/ML Evaluation Lab, Full Hardware Expansion, and Structured PCB Vision Inspector.`,
+        releaseDate: '2026-11-23',
+        releaseUrl: 'https://github.com/hrdk6/CoreSense/releases/latest',
+        updaterManifestUrl: 'https://github.com/hrdk6/CoreSense/releases/latest/download/latest.json',
+        notes: `CoreSense v${desktopVersion} — Signed Native Android APK, Signed 1-Click Desktop Auto-Updates, Hybrid Vector + Lexical RRF RAG (768d gemini-embedding-2), Real-Time SSE Streaming Gemini 4 Copilot, Interactive AI/ML Evaluation Lab, Full Hardware Expansion, and Structured PCB Vision Inspector.`,
         installers: {
           windowsNsis: `CoreSense_${desktopVersion}_x64-setup.exe`,
           windowsMsi: `CoreSense_${desktopVersion}_x64_en-US.msi`,
@@ -314,6 +315,11 @@ export function registerCustomerRoutes(
         version: mobileVersion,
         androidPackage: 'com.coresense.mobile',
         iosBundleId: 'com.coresense.mobile',
+        apkFilename,
+        apkDownloadUrl: `https://github.com/hrdk6/CoreSense/releases/latest/download/${apkFilename}`,
+        releaseUrl: 'https://github.com/hrdk6/CoreSense/releases/latest',
+        pwaUrl: 'https://coresense-mobile-pwa.onrender.com',
+        notes: `CoreSense Android v${mobileVersion} — Cryptographically signed native APK with SoC thermal throttling benchmark, Wi-Fi latency/jitter diagnostics, guided Hotspot check, real-time streaming Gemini 4 Copilot, and PCB Camera Vision Inspector.`,
       },
     };
   });

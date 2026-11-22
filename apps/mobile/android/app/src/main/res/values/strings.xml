@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CoreSense</string>
+    <string name="title_activity_main">CoreSense</string>
+    <string name="package_name">com.coresense.mobile</string>
+    <string name="custom_url_scheme">com.coresense.mobile</string>
+</resources>
