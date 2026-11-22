@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CoreSense — Electronics Diagnostics &amp; Repair Intelligence</title>
+    <meta
+      name="description"
+      content="Free, evidence-first hardware diagnostics, predictive battery and SSD wear forecasting, and safety-gated AI repair guidance for Windows, macOS, Linux, Android, and Mobile Web."
+    />
+    <meta property="og:title" content="CoreSense — Understand what's happening beneath the surface." />
+    <meta
+      property="og:description"
+      content="Native OS & Android hardware telemetry, predictive ML anomaly detection, hybrid technical-manual RAG, and multimodal PCB vision inspection. 100% free across all platforms."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://hrdk6.github.io/CoreSense/" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      (function () {
+        var saved = localStorage.getItem('coresense_site_theme');
+        if (saved === 'light') {
+          document.documentElement.classList.remove('dark');
+        } else {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+  </head>
+  <body class="antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

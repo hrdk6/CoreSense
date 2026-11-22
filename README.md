@@ -9,6 +9,7 @@
 </p>
 
 <p>
+  <a href="https://hrdk6.github.io/CoreSense/"><strong>Official Website</strong></a> •
   <a href="#download-coresense-100-free--unlimited"><strong>Download Apps</strong></a> •
   <a href="#table-of-contents">Table of Contents</a> •
   <a href="#2-system-architecture--monorepo-topology">Architecture</a> •

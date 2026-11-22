@@ -1,0 +1,228 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-display: "Archivo", "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* ============================================================================
+   CoreSense Public Portal — Precision Instrument Chassis (Zero Gradients)
+   True OLED Black (#000000) Default + Tactile Lab Light Mode
+   ============================================================================ */
+:root {
+  color-scheme: light;
+  --cs-chassis: #eceff2;
+  --cs-canvas: #f8f9fa;
+  --cs-surface: #ffffff;
+  --cs-well: #e9edf2;
+  --cs-well-hover: #dde3ea;
+  --cs-border: #ced5de;
+  --cs-border-strong: #97a3b3;
+
+  --cs-ink: #131820;
+  --cs-ink-2: #394554;
+  --cs-ink-muted: #5d6a7b;
+
+  --cs-accent: #2556b8;
+  --cs-accent-hover: #1e4699;
+  --cs-accent-on: #ffffff;
+  --cs-accent-soft: #eaf0fc;
+  --cs-accent-border: #b6cbf5;
+  --cs-accent-ink: #1d428f;
+
+  --cs-action: #141920;
+  --cs-action-hover: #252e3b;
+  --cs-action-ink: #f6f8fa;
+
+  --cs-ok: #157a66;
+  --cs-ok-soft: #e5f5f0;
+  --cs-ok-border: #9ed8c8;
+  --cs-ok-ink: #116252;
+
+  --cs-warn: #a66316;
+  --cs-warn-soft: #fbf2e3;
+  --cs-warn-border: #e5c38b;
+  --cs-warn-ink: #844d0e;
+
+  --cs-danger: #b82d45;
+  --cs-danger-soft: #fbecef;
+  --cs-danger-border: #eab0ba;
+  --cs-danger-ink: #932135;
+}
+
+html.dark {
+  color-scheme: dark;
+  --cs-chassis: #000000;
+  --cs-canvas: #000000;
+  --cs-surface: #0a0b0c;
+  --cs-well: #050606;
+  --cs-well-hover: #131619;
+  --cs-border: #22262b;
+  --cs-border-strong: #373d45;
+
+  --cs-ink: #e8ecea;
+  --cs-ink-2: #b4beba;
+  --cs-ink-muted: #8b9691;
+
+  --cs-accent: #7ba7f7;
+  --cs-accent-hover: #96b9fa;
+  --cs-accent-on: #05080f;
+  --cs-accent-soft: #0b1424;
+  --cs-accent-border: #1e3357;
+  --cs-accent-ink: #b5cffd;
+
+  --cs-action: #e8ecea;
+  --cs-action-hover: #ffffff;
+  --cs-action-ink: #000000;
+
+  --cs-ok: #5ec6a8;
+  --cs-ok-soft: #071914;
+  --cs-ok-border: #164035;
+  --cs-ok-ink: #9de2ce;
+
+  --cs-warn: #e5b567;
+  --cs-warn-soft: #1b1407;
+  --cs-warn-border: #443111;
+  --cs-warn-ink: #f2d29b;
+
+  --cs-danger: #e87a88;
+  --cs-danger-soft: #1f0a0e;
+  --cs-danger-border: #4a1a23;
+  --cs-danger-ink: #f5b3bc;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--cs-canvas);
+  color: var(--cs-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+.cs-theme-switching,
+.cs-theme-switching * {
+  transition: none !important;
+}
+
+::selection {
+  background-color: var(--cs-accent);
+  color: var(--cs-accent-on);
+}
+
+.cs-heading {
+  font-family: var(--font-display);
+  letter-spacing: -0.028em;
+}
+
+.cs-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+.cs-panel {
+  background-color: var(--cs-surface);
+  border: 1px solid var(--cs-border);
+  border-radius: 10px;
+}
+
+.cs-well {
+  background-color: var(--cs-well);
+  border: 1px solid var(--cs-border);
+  border-radius: 8px;
+}
+
+.cs-btn-primary {
+  background-color: var(--cs-action);
+  color: var(--cs-action-ink);
+  border: 1px solid var(--cs-action);
+  border-radius: 8px;
+  font-weight: 600;
+  transition: background-color 140ms ease, transform 100ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cs-btn-primary:hover {
+  background-color: var(--cs-action-hover);
+}
+
+.cs-btn-primary:active {
+  transform: scale(0.985);
+}
+
+.cs-btn-secondary {
+  background-color: var(--cs-surface);
+  color: var(--cs-ink);
+  border: 1px solid var(--cs-border);
+  border-radius: 8px;
+  font-weight: 500;
+  transition: border-color 140ms ease, background-color 140ms ease, transform 100ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cs-btn-secondary:hover {
+  border-color: var(--cs-border-strong);
+  background-color: var(--cs-well-hover);
+}
+
+.cs-btn-secondary:active {
+  transform: scale(0.985);
+}
+
+.cs-btn-accent {
+  background-color: var(--cs-accent);
+  color: var(--cs-accent-on);
+  border: 1px solid var(--cs-accent);
+  border-radius: 8px;
+  font-weight: 600;
+  transition: background-color 140ms ease, transform 100ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cs-btn-accent:hover {
+  background-color: var(--cs-accent-hover);
+}
+
+.cs-btn-accent:active {
+  transform: scale(0.985);
+}
+
+/* Bench drafting grid — pure solid hairline SVG lines, zero gradients */
+.cs-bench-grid {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Cpath d='M36 0H0V36' fill='none' stroke='%2394a3b8' stroke-opacity='0.14' stroke-width='1'/%3E%3C/svg%3E");
+  background-size: 36px 36px;
+}
+
+html.dark .cs-bench-grid {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='36' height='36'%3E%3Cpath d='M36 0H0V36' fill='none' stroke='%23ffffff' stroke-opacity='0.045' stroke-width='1'/%3E%3C/svg%3E");
+}
+
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--cs-accent);
+  outline-offset: 2px;
+}
+
+/* Single deliberate instrument trace animation */
+@keyframes cs-trace-draw {
+  from {
+    stroke-dashoffset: 640;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.cs-trace-line {
+  stroke-dasharray: 640;
+  animation: cs-trace-draw 620ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .cs-trace-line {
+    animation: none !important;
+  }
+}

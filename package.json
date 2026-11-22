@@ -14,11 +14,12 @@
     "dev:mobile": "npm --workspace @coresense/mobile run start",
     "dev:mobile:web": "npm --workspace @coresense/mobile run web",
     "dev:owner": "npm --workspace @coresense/owner-console run dev",
-    "build": "npm --workspace @coresense/shared run build && npm --workspace @coresense/diagnostics-core run build && npm --workspace @coresense/api run build && npm --workspace @coresense/desktop run build && npm --workspace @coresense/owner-console run build",
+    "dev:website": "npm --workspace @coresense/website run dev",
+    "build": "npm --workspace @coresense/shared run build && npm --workspace @coresense/diagnostics-core run build && npm --workspace @coresense/api run build && npm --workspace @coresense/desktop run build && npm --workspace @coresense/owner-console run build && npm --workspace @coresense/website run build",
     "build:desktop:installer": "npm --workspace @coresense/desktop run tauri:build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "npm --workspace @coresense/shared run typecheck && npm --workspace @coresense/diagnostics-core run typecheck && npm --workspace @coresense/api run typecheck && npm --workspace @coresense/desktop run typecheck && npm --workspace @coresense/owner-console run typecheck"
+    "typecheck": "npm --workspace @coresense/shared run typecheck && npm --workspace @coresense/diagnostics-core run typecheck && npm --workspace @coresense/api run typecheck && npm --workspace @coresense/desktop run typecheck && npm --workspace @coresense/owner-console run typecheck && npm --workspace @coresense/website run typecheck"
   },
   "devDependencies": {
     "tsx": "^4.19.3",
