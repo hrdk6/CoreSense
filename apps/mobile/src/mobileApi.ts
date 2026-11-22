@@ -276,6 +276,7 @@ export interface MobileSocBenchmarkResult {
   throttleDropPercent: number;
   stabilityPercent: number;
   throttlingLevel: 'none' | 'mild' | 'moderate' | 'heavy';
+  checksumGuard: boolean;
   windows: MobileSocBenchmarkWindow[];
   completedAt: string;
 }
@@ -498,6 +499,7 @@ export async function runMobileSocStressTest(
 
   for (let w = 0; w < totalWindows; w++) {
     const winStart = performance.now();
+    let activeComputeMs = 0;
     let batches = 0;
     while (performance.now() - winStart < windowDurationMs) {
       const sliceStart = performance.now();
@@ -522,22 +524,21 @@ export async function runMobileSocStressTest(
         sink += dot > 0 ? primes : 0;
         batches += 1;
       }
+      // Measure ONLY active compute time so browser setTimeout throttling/jitter does not skew kOps/s
+      activeComputeMs += performance.now() - sliceStart;
       await new Promise((r) => setTimeout(r, 8));
     }
 
-    const elapsed = Math.max(1, performance.now() - winStart);
-    const kOpsPerSec = Math.round(((batches * 300) / elapsed) * 10) / 10;
+    const elapsedCompute = Math.max(1, activeComputeMs);
+    const kOpsPerSec = Math.round(((batches * 300) / elapsedCompute) * 10) / 10;
     const win: MobileSocBenchmarkWindow = {
       windowIndex: w + 1,
-      durationMs: Math.round(elapsed),
+      durationMs: Math.round(elapsedCompute),
       kOpsPerSec,
     };
     windows.push(win);
     onWindow?.(win, [...windows]);
   }
-
-  // Keep sink observable so JIT never eliminates math loop
-  if (sink < 0) console.debug(sink);
 
   const scores = windows.map((w) => w.kOpsPerSec);
   const peakKOpsPerSec = Math.max(...scores);
@@ -567,6 +568,7 @@ export async function runMobileSocStressTest(
     throttleDropPercent,
     stabilityPercent,
     throttlingLevel,
+    checksumGuard: Number.isFinite(sink) && sink > 0,
     windows,
     completedAt: new Date().toISOString(),
   };

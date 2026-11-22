@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import dns from 'node:dns/promises';
 import net from 'node:net';
 import crypto from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import {
   type DiagnosticResult,
   type DiagnosticWarning,
@@ -1480,40 +1482,95 @@ export async function collectPeripheralsDiagnostics(): Promise<DiagnosticResult>
   };
 }
 
+async function runCpuStressWindowsOffThread(windowTargetMs: number): Promise<{
+  windows: Array<{ windowIndex: number; durationMs: number; kOpsPerSec: number }>;
+  checksumSink: number;
+}> {
+  const workerCode = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    const { performance } = require('node:perf_hooks');
+    const targetMs = workerData.windowTargetMs;
+    const windows = [];
+    let checksumSink = 0;
+    for (let w = 0; w < 4; w++) {
+      const t0 = performance.now();
+      let ops = 0;
+      while (performance.now() - t0 < targetMs) {
+        let acc = 0;
+        for (let i = 1; i <= 400; i++) {
+          const x = (i + ops) * 0.00137;
+          acc += Math.sin(x) * Math.cos(x) + Math.sqrt(i + 1.5);
+        }
+        checksumSink += acc > 0 ? 1 : 0;
+        ops += 1;
+      }
+      const elapsed = Math.max(1, performance.now() - t0);
+      const kOpsPerSec = Math.round(((ops * 400) / elapsed) * 10) / 10;
+      windows.push({ windowIndex: w + 1, durationMs: Math.round(elapsed), kOpsPerSec });
+    }
+    parentPort.postMessage({ windows, checksumSink });
+  `;
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const worker = new Worker(workerCode, {
+        eval: true,
+        workerData: { windowTargetMs },
+      });
+      const timer = setTimeout(() => {
+        worker.terminate().catch(() => {});
+        reject(new Error('CPU stress worker timed out'));
+      }, 15_000);
+      worker.once('message', (msg) => {
+        clearTimeout(timer);
+        resolve(msg as { windows: Array<{ windowIndex: number; durationMs: number; kOpsPerSec: number }>; checksumSink: number });
+      });
+      worker.once('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      worker.once('exit', (code) => {
+        clearTimeout(timer);
+        if (code !== 0) reject(new Error(`CPU stress worker exited with code ${code}`));
+      });
+    });
+  } catch {
+    // Graceful non-blocking micro-sliced fallback if worker_threads is restricted
+    const windows: Array<{ windowIndex: number; durationMs: number; kOpsPerSec: number }> = [];
+    let checksumSink = 0;
+    for (let w = 0; w < 4; w++) {
+      let activeMs = 0;
+      let ops = 0;
+      while (activeMs < windowTargetMs) {
+        const sliceStart = performance.now();
+        while (performance.now() - sliceStart < 40 && activeMs + (performance.now() - sliceStart) < windowTargetMs) {
+          let acc = 0;
+          for (let i = 1; i <= 400; i++) {
+            const x = (i + ops) * 0.00137;
+            acc += Math.sin(x) * Math.cos(x) + Math.sqrt(i + 1.5);
+          }
+          checksumSink += acc > 0 ? 1 : 0;
+          ops += 1;
+        }
+        activeMs += performance.now() - sliceStart;
+        await new Promise((r) => setImmediate(r));
+      }
+      const elapsed = Math.max(1, activeMs);
+      const kOpsPerSec = Math.round(((ops * 400) / elapsed) * 10) / 10;
+      windows.push({ windowIndex: w + 1, durationMs: Math.round(elapsed), kOpsPerSec });
+    }
+    return { windows, checksumSink };
+  }
+}
+
 export async function collectHardwareStressProbe(): Promise<DiagnosticResult> {
   const started = Date.now();
   const platform = detectCurrentPlatform();
   const warnings: DiagnosticWarning[] = [];
   const limitations: string[] = [];
 
-  // 1. Bounded 4 x 650ms CPU Compute Stability & Thermal-Throttling Probe
-  const windows: Array<{ windowIndex: number; durationMs: number; kOpsPerSec: number }> = [];
-  const windowTargetMs = 650;
-  let checksumSink = 0;
-
-  for (let w = 0; w < 4; w++) {
-    const t0 = performance.now();
-    let ops = 0;
-    while (performance.now() - t0 < windowTargetMs) {
-      // Deterministic prime + floating-point trig batch (1,000 inner ops per iteration)
-      let acc = 0;
-      for (let i = 1; i <= 400; i++) {
-        const x = (i + ops) * 0.00137;
-        acc += Math.sin(x) * Math.cos(x) + Math.sqrt(i + 1.5);
-      }
-      checksumSink += acc > 0 ? 1 : 0;
-      ops += 1;
-    }
-    const elapsed = Math.max(1, performance.now() - t0);
-    const kOpsPerSec = Math.round(((ops * 400) / elapsed) * 10) / 10; // kilo-ops/sec
-    windows.push({
-      windowIndex: w + 1,
-      durationMs: Math.round(elapsed),
-      kOpsPerSec,
-    });
-    // Yield briefly to avoid starving event loop
-    await new Promise((r) => setTimeout(r, 40));
-  }
+  // 1. Bounded 4 x 650ms CPU Compute Stability Probe (executed off main event loop in a Worker thread)
+  const { windows, checksumSink } = await runCpuStressWindowsOffThread(650);
 
   const scores = windows.map((w) => w.kOpsPerSec);
   const peakKOps = Math.max(...scores);
@@ -1533,7 +1590,7 @@ export async function collectHardwareStressProbe(): Promise<DiagnosticResult> {
     });
   }
 
-  // 2. Bounded Self-Cleaning 16 MB Sequential Temp-File Disk I/O Benchmark
+  // 2. Bounded Self-Cleaning 16 MB Sequential Temp-File Disk I/O Benchmark (non-blocking async I/O)
   let diskWriteMBps: number | null = null;
   let diskReadMBps: number | null = null;
   const testBytes = 16 * 1024 * 1024;
@@ -1542,18 +1599,18 @@ export async function collectHardwareStressProbe(): Promise<DiagnosticResult> {
   try {
     const payload = crypto.randomBytes(testBytes);
     const wStart = performance.now();
-    const fd = fs.openSync(tmpFile, 'w');
+    const fh = await fsp.open(tmpFile, 'w');
     try {
-      fs.writeSync(fd, payload, 0, payload.length, 0);
-      fs.fsyncSync(fd);
+      await fh.write(payload, 0, payload.length, 0);
+      await fh.sync();
     } finally {
-      fs.closeSync(fd);
+      await fh.close();
     }
     const wSec = Math.max(0.001, (performance.now() - wStart) / 1000);
     diskWriteMBps = Math.round((16 / wSec) * 10) / 10;
 
     const rStart = performance.now();
-    const readBuf = fs.readFileSync(tmpFile);
+    const readBuf = await fsp.readFile(tmpFile);
     const rSec = Math.max(0.001, (performance.now() - rStart) / 1000);
     if (readBuf.length === testBytes) {
       diskReadMBps = Math.round((16 / rSec) * 10) / 10;
@@ -1572,7 +1629,7 @@ export async function collectHardwareStressProbe(): Promise<DiagnosticResult> {
     limitations.push('Temp-directory sequential disk I/O test could not run due to filesystem permission or space limits.');
   } finally {
     try {
-      if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+      await fsp.unlink(tmpFile);
     } catch {
       // ignore cleanup error
     }

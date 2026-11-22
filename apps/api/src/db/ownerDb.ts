@@ -32,13 +32,16 @@ export class OwnerDatabase {
     this.initialOwnerEmail = initialOwnerEmail;
     this.initialOwnerPassword = initialOwnerPassword;
 
-    if (postgresUrl && filename !== ':memory:') {
+    const isMemory = filename === ':memory:' || dataDir === ':memory:';
+    if (postgresUrl && !isMemory) {
       this.pgAdapter = new PostgresAdapter(postgresUrl, 'owner_observability');
       this.db = this.pgAdapter;
       this.dbPath = 'postgresql://supabase/owner_observability';
     } else {
-      fs.mkdirSync(dataDir, { recursive: true });
-      this.dbPath = filename === ':memory:' ? ':memory:' : path.join(dataDir, filename);
+      if (!isMemory) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      this.dbPath = isMemory ? ':memory:' : path.join(dataDir, filename);
       this.pgAdapter = null;
       this.db = new SqliteAdapter(this.dbPath);
     }
@@ -236,8 +239,8 @@ export class OwnerDatabase {
     }
 
     const defaultConfig: Record<string, unknown> = {
-      latestDesktopVersion: '1.3.0',
-      latestMobileVersion: '1.3.0',
+      latestDesktopVersion: '1.3.1',
+      latestMobileVersion: '1.3.1',
       maintenanceMode: false,
       telemetryRetentionDays: 365,
     };

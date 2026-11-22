@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import { type AppConfig, loadConfig } from './config.js';
+import { type AppConfig, isAllowedCorsOrigin, loadConfig } from './config.js';
 import { CustomerDatabase } from './db/customerDb.js';
 import { OwnerDatabase } from './db/ownerDb.js';
 import { registerCustomerRoutes } from './routes/customerRoutes.js';
@@ -44,22 +44,7 @@ export async function createCoreSenseServer(
   });
 
   await app.register(cors, {
-    origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      if (
-        config.corsOrigins.includes(origin) ||
-        origin === 'https://hrdk6.github.io' ||
-        origin.startsWith('http://localhost:') ||
-        origin.startsWith('http://127.0.0.1:') ||
-        origin.startsWith('tauri://') ||
-        origin.startsWith('capacitor://') ||
-        origin === 'https://localhost' ||
-        (config.nodeEnv !== 'production' && /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(origin))
-      ) {
-        return cb(null, true);
-      }
-      return cb(null, false);
-    },
+    origin: (origin, cb) => cb(null, isAllowedCorsOrigin(origin, config)),
     credentials: true,
   });
 

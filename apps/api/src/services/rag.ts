@@ -46,6 +46,63 @@ export interface UserRagStats {
 
 const EMBEDDING_DIMS = 768;
 const RRF_K = 60;
+const MAX_INGEST_EMBED_CHUNKS = 250;
+const EMBED_BATCH_SIZE = 25;
+const MAX_SEMANTIC_SCAN_CHUNKS = 2000;
+const VECTOR_CACHE_MAX_ENTRIES = 5000;
+
+// Bounded in-memory Float32Array vector cache (avoids re-parsing JSON float arrays on every query)
+const parsedVectorCache = new Map<string, Float32Array>();
+const genAiClientCache = new Map<string, GoogleGenAI>();
+
+function getGenAiClient(apiKey: string): GoogleGenAI {
+  let client = genAiClientCache.get(apiKey);
+  if (!client) {
+    if (genAiClientCache.size >= 16) genAiClientCache.clear();
+    client = new GoogleGenAI({ apiKey });
+    genAiClientCache.set(apiKey, client);
+  }
+  return client;
+}
+
+function getCachedFloat32Vector(chunkId: string, embeddingJson: string): Float32Array | null {
+  const hit = parsedVectorCache.get(chunkId);
+  if (hit) {
+    // Refresh insertion order for simple LRU eviction
+    parsedVectorCache.delete(chunkId);
+    parsedVectorCache.set(chunkId, hit);
+    return hit;
+  }
+  try {
+    const parsed = JSON.parse(embeddingJson) as number[];
+    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    const vec = Float32Array.from(parsed);
+    if (parsedVectorCache.size >= VECTOR_CACHE_MAX_ENTRIES) {
+      const oldestKey = parsedVectorCache.keys().next().value;
+      if (oldestKey !== undefined) parsedVectorCache.delete(oldestKey);
+    }
+    parsedVectorCache.set(chunkId, vec);
+    return vec;
+  } catch {
+    return null;
+  }
+}
+
+function cosineSimilarityFloat32(queryVec: number[], docVec: Float32Array): number {
+  if (queryVec.length !== docVec.length || queryVec.length === 0) return 0;
+  let dot = 0;
+  let magA = 0;
+  let magB = 0;
+  for (let i = 0; i < queryVec.length; i++) {
+    const a = queryVec[i];
+    const b = docVec[i];
+    dot += a * b;
+    magA += a * a;
+    magB += b * b;
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  return denom > 0 ? dot / denom : 0;
+}
 
 async function extractPagesFromBuffer(
   buffer: Buffer,
@@ -169,41 +226,44 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return denom > 0 ? dot / denom : 0;
 }
 
-export async function computeEmbeddingIfConfigured(
-  text: string,
+export async function computeEmbeddingsBatchIfConfigured(
+  texts: string[],
   config: AppConfig,
   ownerDb: OwnerDatabase,
   anonymousUserHash?: string,
   taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY' = 'RETRIEVAL_DOCUMENT',
-): Promise<number[] | null> {
-  if (!config.geminiApiKey) return null;
+): Promise<Array<number[] | null>> {
+  if (!config.geminiApiKey || texts.length === 0) return texts.map(() => null);
   const started = Date.now();
   const modelsToTry = Array.from(new Set([config.geminiEmbeddingModel || 'gemini-embedding-2', 'gemini-embedding-001']));
+  const clipped = texts.map((t) => t.slice(0, 4000));
+  const totalChars = clipped.reduce((sum, t) => sum + t.length, 0);
+  const estTokens = Math.ceil(totalChars / 4);
+  const ai = getGenAiClient(config.geminiApiKey);
 
   for (const activeModel of modelsToTry) {
     try {
-      const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
       const res = await ai.models.embedContent({
         model: activeModel,
-        contents: text.slice(0, 4000),
+        contents: clipped.length === 1 ? clipped[0] : clipped,
         config: {
           outputDimensionality: EMBEDDING_DIMS,
           taskType,
         },
       });
-      const rawValues = res.embeddings?.[0]?.values ?? null;
-      if (rawValues && rawValues.length > 0) {
-        const normalized = l2Normalize(rawValues);
+      const rawList = res.embeddings ?? [];
+      if (rawList.length === clipped.length) {
+        const normalized = rawList.map((e) => (e?.values && e.values.length > 0 ? l2Normalize(e.values) : null));
         await ownerDb.recordAiUsage({
           anonymousUserHash,
           provider: 'gemini',
           model: activeModel,
           feature: 'knowledge_base_embedding',
           modality: 'embedding',
-          inputTokens: Math.ceil(text.length / 4),
+          inputTokens: estTokens,
           outputTokens: 0,
           latencyMs: Date.now() - started,
-          estimatedCostUsd: (Math.ceil(text.length / 4) / 1_000_000) * 0.025,
+          estimatedCostUsd: (estTokens / 1_000_000) * 0.025,
           success: true,
         });
         return normalized;
@@ -215,7 +275,7 @@ export async function computeEmbeddingIfConfigured(
         model: activeModel,
         feature: 'knowledge_base_embedding',
         modality: 'embedding',
-        inputTokens: Math.ceil(text.length / 4),
+        inputTokens: estTokens,
         outputTokens: 0,
         latencyMs: Date.now() - started,
         estimatedCostUsd: 0,
@@ -224,7 +284,18 @@ export async function computeEmbeddingIfConfigured(
       });
     }
   }
-  return null;
+  return texts.map(() => null);
+}
+
+export async function computeEmbeddingIfConfigured(
+  text: string,
+  config: AppConfig,
+  ownerDb: OwnerDatabase,
+  anonymousUserHash?: string,
+  taskType: 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY' = 'RETRIEVAL_DOCUMENT',
+): Promise<number[] | null> {
+  const [first] = await computeEmbeddingsBatchIfConfigured([text], config, ownerDb, anonymousUserHash, taskType);
+  return first ?? null;
 }
 
 export async function ingestTechnicalDocument(params: {
@@ -277,25 +348,20 @@ export async function ingestTechnicalDocument(params: {
     now,
   );
 
-  // Batch-embed up to 40 chunks concurrently (batches of 5) using gemini-embedding-2 (768d)
+  // Batch-embed up to 250 chunks (batches of 25 per API call) using gemini-embedding-2 (768d)
   const embeddingsByIndex = new Map<number, number[] | null>();
-  const maxEmbedChunks = Math.min(chunks.length, 40);
+  const maxEmbedChunks = Math.min(chunks.length, MAX_INGEST_EMBED_CHUNKS);
   if (config.geminiApiKey && maxEmbedChunks > 0) {
-    const batchSize = 5;
-    for (let i = 0; i < maxEmbedChunks; i += batchSize) {
-      const slice = chunks.slice(i, Math.min(i + batchSize, maxEmbedChunks));
-      const results = await Promise.all(
-        slice.map((ch) =>
-          computeEmbeddingIfConfigured(
-            `${title} — ${ch.sectionHeading}\n${ch.content}`,
-            config,
-            ownerDb,
-            anonymousUserHash,
-            'RETRIEVAL_DOCUMENT',
-          ),
-        ),
+    for (let i = 0; i < maxEmbedChunks; i += EMBED_BATCH_SIZE) {
+      const slice = chunks.slice(i, Math.min(i + EMBED_BATCH_SIZE, maxEmbedChunks));
+      const results = await computeEmbeddingsBatchIfConfigured(
+        slice.map((ch) => `${title} — ${ch.sectionHeading}\n${ch.content}`),
+        config,
+        ownerDb,
+        anonymousUserHash,
+        'RETRIEVAL_DOCUMENT',
       );
-      slice.forEach((ch, idx) => embeddingsByIndex.set(ch.chunkIndex, results[idx]));
+      slice.forEach((ch, idx) => embeddingsByIndex.set(ch.chunkIndex, results[idx] ?? null));
     }
   }
 
@@ -353,7 +419,7 @@ export async function reembedUserDocuments(params: {
   anonymousUserHash?: string;
   maxChunks?: number;
 }): Promise<{ embeddedNow: number; remainingUnembedded: number; totalChunks: number }> {
-  const { customerDb, ownerDb, config, userId, anonymousUserHash, maxChunks = 50 } = params;
+  const { customerDb, ownerDb, config, userId, anonymousUserHash, maxChunks = MAX_INGEST_EMBED_CHUNKS } = params;
   const totalRow = await customerDb.db.get<{ c: number }>(
     `SELECT COUNT(*) AS c FROM document_chunks dc
      JOIN documents d ON d.id = dc.document_id
@@ -388,23 +454,20 @@ export async function reembedUserDocuments(params: {
   );
 
   let embeddedNow = 0;
-  const batchSize = 5;
-  for (let i = 0; i < pending.length; i += batchSize) {
-    const slice = pending.slice(i, i + batchSize);
-    const vecs = await Promise.all(
-      slice.map((row) =>
-        computeEmbeddingIfConfigured(
-          `${row.title} — ${row.section_heading}\n${row.content}`,
-          config,
-          ownerDb,
-          anonymousUserHash,
-          'RETRIEVAL_DOCUMENT',
-        ),
-      ),
+  for (let i = 0; i < pending.length; i += EMBED_BATCH_SIZE) {
+    const slice = pending.slice(i, i + EMBED_BATCH_SIZE);
+    const vecs = await computeEmbeddingsBatchIfConfigured(
+      slice.map((row) => `${row.title} — ${row.section_heading}\n${row.content}`),
+      config,
+      ownerDb,
+      anonymousUserHash,
+      'RETRIEVAL_DOCUMENT',
     );
     for (let j = 0; j < slice.length; j++) {
       if (vecs[j]) {
-        await customerDb.db.run('UPDATE document_chunks SET embedding_json = ? WHERE id = ?', JSON.stringify(vecs[j]), slice[j].id);
+        const serialized = JSON.stringify(vecs[j]);
+        await customerDb.db.run('UPDATE document_chunks SET embedding_json = ? WHERE id = ?', serialized, slice[j].id);
+        parsedVectorCache.set(slice[j].id, Float32Array.from(vecs[j]!));
         embeddedNow += 1;
       }
     }
@@ -585,26 +648,52 @@ export async function searchUserKnowledgeBase(params: {
   // Channel B: Dense Semantic Vector Retrieval (works even when 0 keywords overlap!)
   const runSemanticSearch = async (): Promise<Array<{ row: ChunkCandidate; similarity: number }>> => {
     if (!config.geminiApiKey) return [];
-    const embeddedRows = await customerDb.db.all<ChunkCandidate>(
-      `SELECT
-        dc.id AS chunk_id,
-        dc.document_id,
-        d.title AS document_title,
-        d.doc_version,
-        dc.page_number,
-        dc.section_heading,
-        dc.has_table,
-        dc.has_command_block,
-        dc.content,
-        dc.embedding_json
-      FROM document_chunks dc
-      JOIN documents d ON d.id = dc.document_id
-      WHERE dc.user_id = ?
-        AND d.deleted_at IS NULL
-        AND dc.embedding_json IS NOT NULL
-      LIMIT 400`,
-      userId,
-    );
+    const embeddedRows = params.deviceId
+      ? await customerDb.db.all<ChunkCandidate>(
+          `SELECT
+            dc.id AS chunk_id,
+            dc.document_id,
+            d.title AS document_title,
+            d.doc_version,
+            dc.page_number,
+            dc.section_heading,
+            dc.has_table,
+            dc.has_command_block,
+            dc.content,
+            dc.embedding_json
+          FROM document_chunks dc
+          JOIN documents d ON d.id = dc.document_id
+          WHERE dc.user_id = ?
+            AND d.deleted_at IS NULL
+            AND dc.embedding_json IS NOT NULL
+          ORDER BY CASE WHEN d.device_id = ? THEN 0 ELSE 1 END ASC, d.created_at DESC, dc.chunk_index ASC
+          LIMIT ?`,
+          userId,
+          params.deviceId,
+          MAX_SEMANTIC_SCAN_CHUNKS,
+        )
+      : await customerDb.db.all<ChunkCandidate>(
+          `SELECT
+            dc.id AS chunk_id,
+            dc.document_id,
+            d.title AS document_title,
+            d.doc_version,
+            dc.page_number,
+            dc.section_heading,
+            dc.has_table,
+            dc.has_command_block,
+            dc.content,
+            dc.embedding_json
+          FROM document_chunks dc
+          JOIN documents d ON d.id = dc.document_id
+          WHERE dc.user_id = ?
+            AND d.deleted_at IS NULL
+            AND dc.embedding_json IS NOT NULL
+          ORDER BY d.created_at DESC, dc.chunk_index ASC
+          LIMIT ?`,
+          userId,
+          MAX_SEMANTIC_SCAN_CHUNKS,
+        );
     if (embeddedRows.length === 0) return [];
 
     const queryEmbedding = await computeEmbeddingIfConfigured(
@@ -619,14 +708,11 @@ export async function searchUserKnowledgeBase(params: {
     const scoredVecs: Array<{ row: ChunkCandidate; similarity: number }> = [];
     for (const row of embeddedRows) {
       if (!row.embedding_json) continue;
-      try {
-        const vec = JSON.parse(row.embedding_json) as number[];
-        const sim = cosineSimilarity(queryEmbedding, vec);
-        if (sim >= 0.36) {
-          scoredVecs.push({ row, similarity: sim });
-        }
-      } catch {
-        // skip malformed vector
+      const vec = getCachedFloat32Vector(row.chunk_id, row.embedding_json);
+      if (!vec) continue;
+      const sim = cosineSimilarityFloat32(queryEmbedding, vec);
+      if (sim >= 0.36) {
+        scoredVecs.push({ row, similarity: sim });
       }
     }
     scoredVecs.sort((a, b) => b.similarity - a.similarity);
@@ -733,6 +819,13 @@ export async function deleteUserDocument(
 
   const now = new Date().toISOString();
   const nextRev = existing.revision + 1;
+  const deletedChunks = await customerDb.db.all<{ id: string }>(
+    'SELECT id FROM document_chunks WHERE document_id = ? AND user_id = ?',
+    documentId,
+    userId,
+  );
+  for (const ch of deletedChunks) parsedVectorCache.delete(ch.id);
+
   if (customerDb.db.dialect === 'sqlite') {
     await customerDb.db.run('DELETE FROM document_chunks_fts WHERE document_id = ? AND user_id = ?', documentId, userId);
   }

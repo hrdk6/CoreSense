@@ -37,6 +37,24 @@ export interface AppConfig {
   openaiBaseUrl: string;
   openaiModel: string;
   publicApiUrl: string;
+  allowHostDiagnostics: boolean;
+}
+
+export function isAllowedCorsOrigin(origin: string | undefined, config: Pick<AppConfig, 'corsOrigins' | 'nodeEnv'>): boolean {
+  if (!origin) return true;
+  if (
+    config.corsOrigins.includes(origin) ||
+    origin === 'https://hrdk6.github.io' ||
+    origin.startsWith('http://localhost:') ||
+    origin.startsWith('http://127.0.0.1:') ||
+    origin.startsWith('tauri://') ||
+    origin.startsWith('capacitor://') ||
+    origin === 'https://localhost' ||
+    (config.nodeEnv !== 'production' && /^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(origin))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
@@ -45,9 +63,15 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const sharedDatabaseUrl = (process.env.DATABASE_URL || '').trim();
   const customerDatabaseUrl = (process.env.CUSTOMER_DATABASE_URL || sharedDatabaseUrl).trim();
   const ownerDatabaseUrl = (process.env.OWNER_DATABASE_URL || sharedDatabaseUrl).trim();
+  const nodeEnv = overrides.nodeEnv || process.env.NODE_ENV || 'development';
+  const envAllowHost = process.env.ALLOW_HOST_DIAGNOSTICS;
+  const allowHostDiagnostics =
+    envAllowHost !== undefined
+      ? envAllowHost === 'true' || envAllowHost === '1'
+      : nodeEnv !== 'production';
 
   return {
-    nodeEnv: process.env.NODE_ENV || 'development',
+    nodeEnv,
     port: Number(process.env.PORT || 4000),
     host: process.env.HOST || '127.0.0.1',
     corsOrigins: (
@@ -80,6 +104,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     openaiBaseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
     openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     publicApiUrl: process.env.PUBLIC_API_URL || 'http://127.0.0.1:4000',
+    allowHostDiagnostics,
     ...overrides,
   };
 }

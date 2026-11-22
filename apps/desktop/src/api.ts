@@ -51,9 +51,22 @@ export function isTauriRuntime(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+export const NATIVE_TAURI_TOOL_IDS: readonly string[] = [
+  'cpu_diagnostics',
+  'memory_diagnostics',
+  'storage_diagnostics',
+  'gpu_diagnostics',
+  'network_diagnostics',
+  'peripherals_diagnostics',
+  'hardware_stress_probe',
+  'os_health_diagnostics',
+  'power_and_peripherals',
+  'full_system_snapshot',
+];
+
 // Invoke native Rust diagnostic command when running inside Tauri Desktop
 export async function runNativeTauriDiagnostic(toolId: string): Promise<DiagnosticResult | null> {
-  if (!isTauriRuntime()) return null;
+  if (!isTauriRuntime() || !NATIVE_TAURI_TOOL_IDS.includes(toolId)) return null;
   try {
     const tauri = (window as unknown as {
       __TAURI_INTERNALS__?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -211,7 +224,7 @@ export async function reportDesktopActivation(): Promise<void> {
         installId: getInstallId(),
         platform: detectClientPlatform(),
         appVersion: CORESENSE_VERSION,
-        channel: isTauriRuntime() ? 'direct' : 'direct',
+        channel: isTauriRuntime() ? 'desktop_native' : 'web_preview',
       },
     });
   } catch {

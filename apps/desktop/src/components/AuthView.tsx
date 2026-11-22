@@ -378,7 +378,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                 />
               </svg>
 
-              {/* Live Numeric Readout Strip */}
+              {/* Sample Readout Strip */}
               <div className="mt-2 pt-2.5 border-t border-[#181b1f] flex flex-wrap items-baseline justify-between gap-2">
                 <div className="flex items-baseline gap-3">
                   <span className="font-mono text-xl font-semibold text-[#e8ecea] cs-tabular">
@@ -388,7 +388,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
                     {activeScope.secondaryReadout}
                   </span>
                 </div>
-                <span className="text-[11px] text-[#707b77]">Interactive signal preview</span>
+                <span className="text-[11px] text-[#707b77]">Sample preview · Illustrative trace</span>
               </div>
             </div>
 

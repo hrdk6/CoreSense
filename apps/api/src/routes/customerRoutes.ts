@@ -23,7 +23,7 @@ import {
   buildSimulatedDiagnostic,
   executeValidatedDiagnosticTool,
 } from '@coresense/diagnostics-core';
-import type { AppConfig } from '../config.js';
+import { type AppConfig, isAllowedCorsOrigin } from '../config.js';
 import type { CustomerDatabase } from '../db/customerDb.js';
 import type { OwnerDatabase } from '../db/ownerDb.js';
 import {
@@ -490,6 +490,18 @@ export function registerCustomerRoutes(
     const schema = z.object({ email: z.string().email() });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Valid email required.' });
+
+    if (config.nodeEnv === 'production') {
+      if (supabaseEnabled) {
+        return reply.code(400).send({
+          error: 'This server uses Supabase Auth for password recovery. Use the email reset flow in the sign-in screen.',
+        });
+      }
+      return reply.code(501).send({
+        error: 'Email password recovery is unavailable because neither Supabase Auth nor an email transport is configured on this production server.',
+      });
+    }
+
     const user = (await customerDb.db.get('SELECT id FROM users WHERE email = ?', parsed.data.email.toLowerCase().trim())) as { id: string } | undefined;
 
     if (user) {
@@ -499,8 +511,7 @@ export function registerCustomerRoutes(
       await customerDb.recordAudit(user.id, 'password_recovery_requested', 'user', user.id);
       return {
         message: 'If an account matches this email, a recovery code has been generated.',
-        // Returned ONLY in development mode so users can test account recovery without SMTP
-        ...(config.nodeEnv !== 'production' ? { devRecoveryCode: resetCode } : {}),
+        devRecoveryCode: resetCode,
       };
     }
     return { message: 'If an account matches this email, a recovery code has been generated.' };
@@ -930,6 +941,14 @@ export function registerCustomerRoutes(
         error: 'Explicit user approval required for state-modifying tool.',
         approvalRequired: true,
         approvalWarning: def.approvalWarning,
+      });
+    }
+
+    if (!config.allowHostDiagnostics) {
+      return reply.code(400).send({
+        error:
+          'Server-side host diagnostics are disabled in cloud deployments because the remote API cannot inspect your local hardware. Use the CoreSense Desktop app (native Rust agent) or Mobile app to collect diagnostics locally and sync via /api/v1/diagnostics/ingest.',
+        code: 'CLIENT_LOCAL_EXECUTION_REQUIRED',
       });
     }
 
@@ -1400,7 +1419,7 @@ export function registerCustomerRoutes(
     });
   });
 
-  // Helper to configure SSE response cleanly (compatible with CORS + Vite + Render proxies)
+  // Helper to configure SSE response cleanly (enforcing the same CORS allowlist as Fastify)
   const openSseStream = (req: FastifyRequest, reply: FastifyReply) => {
     const origin = req.headers.origin;
     reply.hijack();
@@ -1410,11 +1429,11 @@ export function registerCustomerRoutes(
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      Vary: 'Origin',
     };
-    if (origin) {
+    if (origin && isAllowedCorsOrigin(origin, config)) {
       headers['Access-Control-Allow-Origin'] = origin;
       headers['Access-Control-Allow-Credentials'] = 'true';
-      headers.Vary = 'Origin';
     }
     raw.writeHead(200, headers);
     const sendEvent = (eventName: string, payload: unknown) => {
@@ -1661,6 +1680,7 @@ export function registerCustomerRoutes(
       toolId: z.string(),
       parameters: z.record(z.unknown()).default({}),
       explicitUserApproval: z.boolean().default(false),
+      clientSnapshot: DiagnosticResultSchema.optional(),
     });
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.flatten() });
@@ -1674,9 +1694,24 @@ export function registerCustomerRoutes(
       });
     }
 
-    const snap = await executeValidatedDiagnosticTool(parsed.data.toolId, parsed.data.parameters, {
-      explicitUserApproval: parsed.data.explicitUserApproval,
-    });
+    let snap: DiagnosticResult;
+    if (parsed.data.clientSnapshot) {
+      if (parsed.data.clientSnapshot.toolId !== parsed.data.toolId) {
+        return reply.code(400).send({ error: 'Client diagnostic snapshot toolId does not match requested toolId.' });
+      }
+      snap = parsed.data.clientSnapshot;
+    } else {
+      if (!config.allowHostDiagnostics) {
+        return reply.code(400).send({
+          error:
+            'Server-side host diagnostics are disabled in cloud deployments so the server does not probe its own container. Run this diagnostic from CoreSense Desktop (native Rust agent) or Mobile to attach a local snapshot.',
+          code: 'CLIENT_LOCAL_EXECUTION_REQUIRED',
+        });
+      }
+      snap = await executeValidatedDiagnosticTool(parsed.data.toolId, parsed.data.parameters, {
+        explicitUserApproval: parsed.data.explicitUserApproval,
+      });
+    }
     await saveSnapshot(user.id, snap, inv.device_id ? String(inv.device_id) : null, id);
 
     // Mark tool executed in pending_tools_json

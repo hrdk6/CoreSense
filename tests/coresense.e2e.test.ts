@@ -1,6 +1,9 @@
+import fs from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createCoreSenseServer, type CoreSenseServerContext } from '../apps/api/src/server.js';
-import { generateTotpCode } from '../apps/api/src/security/crypto.js';
+import { CustomerDatabase } from '../apps/api/src/db/customerDb.js';
+import { OwnerDatabase } from '../apps/api/src/db/ownerDb.js';
+import { generateTotpCode, validateUploadedFile } from '../apps/api/src/security/crypto.js';
 import { analyzeTelemetryHealth } from '../apps/api/src/services/anomalyEngine.js';
 import { computeHybridRrfScore, cosineSimilarity } from '../apps/api/src/services/rag.js';
 import { executeValidatedDiagnosticTool } from '@coresense/diagnostics-core';
@@ -152,10 +155,10 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       url: '/api/v1/releases/latest',
     });
     expect(releaseRes.statusCode).toBe(200);
-    expect(releaseRes.json().desktop.version).toBe('1.3.0');
+    expect(releaseRes.json().desktop.version).toBe('1.3.1');
     expect(releaseRes.json().desktop.updaterManifestUrl).toContain('hrdk6/CoreSense/releases/latest/download/latest.json');
-    expect(releaseRes.json().mobile.version).toBe('1.3.0');
-    expect(releaseRes.json().mobile.apkDownloadUrl).toContain('hrdk6/CoreSense/releases/latest/download/CoreSense_1.3.0_android.apk');
+    expect(releaseRes.json().mobile.version).toBe('1.3.1');
+    expect(releaseRes.json().mobile.apkDownloadUrl).toContain('hrdk6/CoreSense/releases/latest/download/CoreSense_1.3.1_android.apk');
   });
 
   it('3. Runs genuine local Windows/OS diagnostics and strictly enforces tool registry security & approval gates', async () => {
@@ -671,6 +674,7 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${userAToken}`,
+        Origin: 'http://localhost:5173',
       },
       body: JSON.stringify({
         initialSymptom: 'My desktop GPU shows Windows Device Manager Code 43 and black screens.',
@@ -678,9 +682,140 @@ describe('CoreSense End-to-End Platform, Security, Sync & Privacy Boundary Suite
     });
     expect(streamResp.status).toBe(200);
     expect(streamResp.headers.get('content-type')).toContain('text/event-stream');
+    expect(streamResp.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
     const sseBody = await streamResp.text();
     expect(sseBody).toContain('event: meta');
     expect(sseBody).toContain('event: delta');
     expect(sseBody).toContain('event: done');
+
+    // Disallowed origin MUST NOT be reflected on SSE endpoints
+    const blockedCorsResp = await fetch(`${addr}/api/v1/investigations/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${userAToken}`,
+        Origin: 'https://evil-attacker.example',
+      },
+      body: JSON.stringify({
+        initialSymptom: 'Check CORS enforcement on SSE endpoint.',
+      }),
+    });
+    expect(blockedCorsResp.headers.get('access-control-allow-origin')).toBeNull();
+    await blockedCorsResp.text();
+  });
+
+  it('13. Enforces :memory: disk safety, Mach-O binary rejection, and production cloud diagnostic/recovery guards', async () => {
+    // 1. In-memory DB constructors must never create a directory on disk even if ":memory:" is passed as dataDir
+    const memCustomer = new CustomerDatabase(':memory:', ':memory:');
+    const memOwner = new OwnerDatabase(':memory:', 'owner@test.local', 'OwnerPass#2026!', ':memory:');
+    expect(memCustomer.dbPath).toBe(':memory:');
+    expect(memOwner.dbPath).toBe(':memory:');
+    expect(fs.existsSync(':memory:')).toBe(false);
+    await memCustomer.close();
+    await memOwner.close();
+
+    // 2. Mach-O 32-bit, 64-bit, and Universal/Fat binaries must be explicitly rejected
+    for (const magic of [
+      [0xfe, 0xed, 0xfa, 0xce],
+      [0xce, 0xfa, 0xed, 0xfe],
+      [0xfe, 0xed, 0xfa, 0xcf],
+      [0xcf, 0xfa, 0xed, 0xfe],
+      [0xca, 0xfe, 0xba, 0xbe],
+    ]) {
+      const check = validateUploadedFile(Buffer.from([...magic, 0x00, 0x00, 0x00, 0x07]), 'text/plain', 'manual.txt');
+      expect(check.valid).toBe(false);
+      expect(check.reason).toContain('Executable');
+    }
+
+    // 3. Production cloud server refuses to diagnose itself and refuses undeliverable password resets
+    const prodCtx = await createCoreSenseServer(
+      {
+        nodeEnv: 'production',
+        supabaseUrl: '',
+        supabaseAnonKey: '',
+        geminiApiKey: '',
+        openaiApiKey: '',
+        dataDir: './apps/api/data/test-prod-inmem',
+      },
+      { inMemoryDbs: true, logger: false },
+    );
+    await prodCtx.app.ready();
+    try {
+      expect(prodCtx.config.allowHostDiagnostics).toBe(false);
+
+      const reg = await prodCtx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/register',
+        payload: {
+          email: 'prod-user@coresense.test',
+          password: 'ProdPassword#2026!',
+          displayName: 'Prod Tester',
+        },
+      });
+      expect(reg.statusCode).toBe(201);
+      const prodToken = reg.json().accessToken as string;
+
+      // Cloud server must refuse /api/v1/diagnostics/run instead of probing its own container
+      const cloudDiag = await prodCtx.app.inject({
+        method: 'POST',
+        url: '/api/v1/diagnostics/run',
+        headers: { Authorization: `Bearer ${prodToken}` },
+        payload: { toolId: 'cpu_diagnostics' },
+      });
+      expect(cloudDiag.statusCode).toBe(400);
+      expect(cloudDiag.json().code).toBe('CLIENT_LOCAL_EXECUTION_REQUIRED');
+
+      // Investigation execute-tool must reject server-side run in cloud prod, but accept a client-collected snapshot
+      const invRes = await prodCtx.app.inject({
+        method: 'POST',
+        url: '/api/v1/investigations',
+        headers: { Authorization: `Bearer ${prodToken}` },
+        payload: { initialSymptom: 'My laptop CPU fan is stuck at max RPM.' },
+      });
+      expect(invRes.statusCode).toBe(201);
+      const invId = invRes.json().investigation.id as string;
+
+      const blockedExec = await prodCtx.app.inject({
+        method: 'POST',
+        url: `/api/v1/investigations/${invId}/execute-tool`,
+        headers: { Authorization: `Bearer ${prodToken}` },
+        payload: { toolId: 'cpu_diagnostics' },
+      });
+      expect(blockedExec.statusCode).toBe(400);
+      expect(blockedExec.json().code).toBe('CLIENT_LOCAL_EXECUTION_REQUIRED');
+
+      const clientSnap: DiagnosticResult = {
+        id: '00000000-0000-4000-8000-000000000001',
+        toolId: 'cpu_diagnostics',
+        measurementType: 'measured',
+        source: 'CoreSense Native Rust Agent (sysinfo • windows)',
+        platform: 'windows',
+        osVersion: 'Windows 11',
+        collectedAt: new Date().toISOString(),
+        durationMs: 240,
+        summary: 'CPU at 89.4% load driven by SearchIndexer.exe',
+        limitations: [],
+        warnings: [],
+        data: { utilizationPercent: 89.4 },
+      };
+      const okClientExec = await prodCtx.app.inject({
+        method: 'POST',
+        url: `/api/v1/investigations/${invId}/execute-tool`,
+        headers: { Authorization: `Bearer ${prodToken}` },
+        payload: { toolId: 'cpu_diagnostics', clientSnapshot: clientSnap },
+      });
+      expect(okClientExec.statusCode).toBe(200);
+      expect(okClientExec.json().snapshot.source).toContain('Native Rust Agent');
+
+      // Production without Supabase/SMTP must return 501 instead of silently discarding a recovery code
+      const prodRecover = await prodCtx.app.inject({
+        method: 'POST',
+        url: '/api/v1/auth/recover/request',
+        payload: { email: 'prod-user@coresense.test' },
+      });
+      expect(prodRecover.statusCode).toBe(501);
+    } finally {
+      await prodCtx.close();
+    }
   });
 });

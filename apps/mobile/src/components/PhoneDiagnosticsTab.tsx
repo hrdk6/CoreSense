@@ -70,12 +70,14 @@ export const PhoneDiagnosticsTab: React.FC<{
   const [touchTestOpen, setTouchTestOpen] = useState(false);
   const [touchedCells, setTouchedCells] = useState<Set<number>>(new Set());
   const [displayColorIdx, setDisplayColorIdx] = useState<number | null>(null);
+  const [displayCycleDone, setDisplayCycleDone] = useState(false);
   const [displayStatus, setDisplayStatus] = useState<'untested' | 'pass' | 'fail'>('untested');
   const [motionReading, setMotionReading] = useState<string>('Stationary');
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
   const micStreamRef = useRef<MediaStream | null>(null);
+  const micAudioCtxRef = useRef<AudioContext | null>(null);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
 
   const refreshSystemChecks = async () => {
@@ -113,6 +115,8 @@ export const PhoneDiagnosticsTab: React.FC<{
     return () => {
       window.removeEventListener('devicemotion', onMotion);
       micStreamRef.current?.getTracks().forEach((t) => t.stop());
+      micAudioCtxRef.current?.close().catch(() => {});
+      micAudioCtxRef.current = null;
     };
   }, []);
 
@@ -173,6 +177,9 @@ export const PhoneDiagnosticsTab: React.FC<{
       } else {
         osc.connect(gain).connect(ctx.destination);
       }
+      osc.onended = () => {
+        ctx.close().catch(() => {});
+      };
       osc.start();
       osc.stop(ctx.currentTime + 0.85);
     } catch {}
@@ -182,6 +189,8 @@ export const PhoneDiagnosticsTab: React.FC<{
     if (micActive) {
       micStreamRef.current?.getTracks().forEach((t) => t.stop());
       micStreamRef.current = null;
+      micAudioCtxRef.current?.close().catch(() => {});
+      micAudioCtxRef.current = null;
       setMicActive(false);
       return;
     }
@@ -190,6 +199,7 @@ export const PhoneDiagnosticsTab: React.FC<{
       micStreamRef.current = stream;
       setMicActive(true);
       const ctx = new AudioContext();
+      micAudioCtxRef.current = ctx;
       const src = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
@@ -217,7 +227,7 @@ export const PhoneDiagnosticsTab: React.FC<{
       const warnings: Array<{
         code: string;
         severity: 'info' | 'warning' | 'critical';
-        component: 'network' | 'audio' | 'thermal' | 'soc';
+        component: 'network' | 'audio' | 'thermal' | 'soc' | 'display';
         title: string;
         detail: string;
       }> = [];
@@ -265,6 +275,15 @@ export const PhoneDiagnosticsTab: React.FC<{
           component: 'audio',
           title: 'Speaker Check Failed',
           detail: 'User marked audio speaker output test as failed.',
+        });
+      }
+      if (displayStatus === 'fail') {
+        warnings.push({
+          code: 'DISPLAY_DEFECT_REPORTED',
+          severity: 'warning',
+          component: 'display',
+          title: 'Display Dead-Pixel / Burn-In Reported',
+          detail: 'User reported visible pixel, uniformity, or burn-in defects during solid-color screen inspection.',
         });
       }
 
@@ -766,7 +785,10 @@ export const PhoneDiagnosticsTab: React.FC<{
         <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
-            onClick={() => setDisplayColorIdx(0)}
+            onClick={() => {
+              setDisplayCycleDone(false);
+              setDisplayColorIdx(0);
+            }}
             className="cs-btn-secondary py-2 text-xs font-semibold cursor-pointer"
           >
             Dead-pixel cycle
@@ -782,6 +804,35 @@ export const PhoneDiagnosticsTab: React.FC<{
             Touch grid (4×4)
           </button>
         </div>
+        {(displayCycleDone || displayStatus !== 'untested') && (
+          <div className="pt-1 flex items-center justify-between gap-2 text-[11px]">
+            <span className="text-[var(--cs-ink-muted)]">Did you spot dead pixels or burn-in?</span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setDisplayStatus('pass')}
+                className={`px-2.5 py-1 rounded-md border font-semibold cursor-pointer ${
+                  displayStatus === 'pass'
+                    ? 'bg-[var(--cs-ok-soft)] border-[var(--cs-ok)] text-[var(--cs-ok-ink)]'
+                    : 'bg-[var(--cs-well)] border-[var(--cs-border)] text-[var(--cs-ink-2)]'
+                }`}
+              >
+                Clean (Pass)
+              </button>
+              <button
+                type="button"
+                onClick={() => setDisplayStatus('fail')}
+                className={`px-2.5 py-1 rounded-md border font-semibold cursor-pointer ${
+                  displayStatus === 'fail'
+                    ? 'bg-[var(--cs-danger-soft)] border-[var(--cs-danger)] text-[var(--cs-danger)]'
+                    : 'bg-[var(--cs-well)] border-[var(--cs-border)] text-[var(--cs-ink-2)]'
+                }`}
+              >
+                Defect (Fail)
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Camera Board Capture Shortcut */}
@@ -834,7 +885,7 @@ export const PhoneDiagnosticsTab: React.FC<{
             if (displayColorIdx + 1 < displayColors.length) setDisplayColorIdx(displayColorIdx + 1);
             else {
               setDisplayColorIdx(null);
-              setDisplayStatus('pass');
+              setDisplayCycleDone(true);
             }
           }}
           style={{ backgroundColor: displayColors[displayColorIdx] }}

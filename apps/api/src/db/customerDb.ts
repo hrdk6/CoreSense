@@ -9,13 +9,16 @@ export class CustomerDatabase {
   private readonly pgAdapter: PostgresAdapter | null;
 
   constructor(dataDir: string, filename = 'coresense_customer.db', postgresUrl?: string) {
-    if (postgresUrl && filename !== ':memory:') {
+    const isMemory = filename === ':memory:' || dataDir === ':memory:';
+    if (postgresUrl && !isMemory) {
       this.pgAdapter = new PostgresAdapter(postgresUrl, 'customer_workspace');
       this.db = this.pgAdapter;
       this.dbPath = 'postgresql://supabase/customer_workspace';
     } else {
-      fs.mkdirSync(dataDir, { recursive: true });
-      this.dbPath = filename === ':memory:' ? ':memory:' : path.join(dataDir, filename);
+      if (!isMemory) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      this.dbPath = isMemory ? ':memory:' : path.join(dataDir, filename);
       this.pgAdapter = null;
       this.db = new SqliteAdapter(this.dbPath);
     }

@@ -23,7 +23,7 @@ import {
   X,
 } from 'lucide-react';
 import type { EvidenceItem, Hypothesis, StructuredPcbInspection, VerificationReport } from '@coresense/shared';
-import { apiRequest, streamSsePost } from '../api';
+import { NATIVE_TAURI_TOOL_IDS, apiRequest, isTauriRuntime, runNativeTauriDiagnostic, streamSsePost } from '../api';
 import { MarkdownBlock } from './MarkdownBlock';
 
 interface DeviceOption {
@@ -460,12 +460,18 @@ export const CopilotView: React.FC<{
     setRunningToolId(tool.toolId);
     setError(null);
     try {
+      let clientSnapshot = undefined;
+      if (isTauriRuntime() && NATIVE_TAURI_TOOL_IDS.includes(tool.toolId)) {
+        const nativeRes = await runNativeTauriDiagnostic(tool.toolId);
+        if (nativeRes) clientSnapshot = nativeRes;
+      }
       await apiRequest(`/api/v1/investigations/${targetId}/execute-tool`, {
         method: 'POST',
         body: {
           toolId: tool.toolId,
           parameters: tool.parameters || {},
           explicitUserApproval: explicitApproval,
+          ...(clientSnapshot ? { clientSnapshot } : {}),
         },
       });
       await loadDetail(targetId);
@@ -497,11 +503,20 @@ export const CopilotView: React.FC<{
     try {
       let followupSnapshotId: string | undefined;
       if (runFreshScan) {
-        const snapRes = await apiRequest<{ snapshot: { id: string } }>('/api/v1/diagnostics/run', {
-          method: 'POST',
-          body: { toolId: 'full_system_snapshot', investigationId: selectedId, deviceId: detail?.deviceId || undefined },
-        });
-        followupSnapshotId = snapRes.snapshot.id;
+        const nativeRes = isTauriRuntime() ? await runNativeTauriDiagnostic('full_system_snapshot') : null;
+        if (nativeRes) {
+          const snapRes = await apiRequest<{ snapshot: { id: string } }>('/api/v1/diagnostics/ingest', {
+            method: 'POST',
+            body: { snapshot: nativeRes, investigationId: selectedId, deviceId: detail?.deviceId || undefined },
+          });
+          followupSnapshotId = snapRes.snapshot.id;
+        } else {
+          const snapRes = await apiRequest<{ snapshot: { id: string } }>('/api/v1/diagnostics/run', {
+            method: 'POST',
+            body: { toolId: 'full_system_snapshot', investigationId: selectedId, deviceId: detail?.deviceId || undefined },
+          });
+          followupSnapshotId = snapRes.snapshot.id;
+        }
       }
       await apiRequest(`/api/v1/investigations/${selectedId}/verify`, {
         method: 'POST',

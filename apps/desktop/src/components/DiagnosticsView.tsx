@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import type { DiagnosticResult, SystemHealthAnalysis } from '@coresense/shared';
-import { apiRequest, isTauriRuntime, runNativeTauriDiagnostic } from '../api';
+import { NATIVE_TAURI_TOOL_IDS, apiRequest, isTauriRuntime, runNativeTauriDiagnostic } from '../api';
 
 const TOOL_CARDS = [
   { id: 'full_system_snapshot', label: 'Full scan', icon: Activity },
@@ -139,21 +139,7 @@ export const DiagnosticsView: React.FC<{ devices: Array<{ id: string; name: stri
     setRunningTool(toolId);
     setError(null);
     try {
-      if (
-        isTauriRuntime() &&
-        [
-          'cpu_diagnostics',
-          'memory_diagnostics',
-          'storage_diagnostics',
-          'gpu_diagnostics',
-          'network_diagnostics',
-          'peripherals_diagnostics',
-          'hardware_stress_probe',
-          'os_health_diagnostics',
-          'power_and_peripherals',
-          'full_system_snapshot',
-        ].includes(toolId)
-      ) {
+      if (isTauriRuntime() && NATIVE_TAURI_TOOL_IDS.includes(toolId)) {
         const nativeRes = await runNativeTauriDiagnostic(toolId);
         if (nativeRes) {
           const ingested = await apiRequest<{ snapshot: DiagnosticResult }>('/api/v1/diagnostics/ingest', {

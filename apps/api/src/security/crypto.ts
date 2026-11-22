@@ -200,11 +200,21 @@ export function validateUploadedFile(
     return { valid: false, detectedKind: 'unknown', reason: 'File exceeds 20 MB limit.' };
   }
 
-  // Reject Windows PE / ELF / Mach-O binaries explicitly
-  if (
-    (buffer[0] === 0x4d && buffer[1] === 0x5a) || // MZ (EXE/DLL)
-    (buffer[0] === 0x7f && buffer[1] === 0x45 && buffer[2] === 0x4c && buffer[3] === 0x46) // ELF
-  ) {
+  // Reject Windows PE / ELF / Mach-O (32/64/Universal/Fat64) binaries explicitly
+  const isPe = buffer.length >= 2 && buffer[0] === 0x4d && buffer[1] === 0x5a; // MZ (EXE/DLL)
+  const isElf =
+    buffer.length >= 4 &&
+    buffer[0] === 0x7f &&
+    buffer[1] === 0x45 &&
+    buffer[2] === 0x4c &&
+    buffer[3] === 0x46; // ELF
+  const isMachO =
+    buffer.length >= 4 &&
+    ((buffer[0] === 0xfe && buffer[1] === 0xed && buffer[2] === 0xfa && (buffer[3] === 0xce || buffer[3] === 0xcf)) ||
+      ((buffer[0] === 0xce || buffer[0] === 0xcf) && buffer[1] === 0xfa && buffer[2] === 0xed && buffer[3] === 0xfe) ||
+      (buffer[0] === 0xca && buffer[1] === 0xfe && buffer[2] === 0xba && (buffer[3] === 0xbe || buffer[3] === 0xbf)) ||
+      ((buffer[0] === 0xbe || buffer[0] === 0xbf) && buffer[1] === 0xba && buffer[2] === 0xfe && buffer[3] === 0xca));
+  if (isPe || isElf || isMachO) {
     return { valid: false, detectedKind: 'unknown', reason: 'Executable binaries are not permitted.' };
   }
 

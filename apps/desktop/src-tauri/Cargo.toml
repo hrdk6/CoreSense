@@ -1,6 +1,6 @@
 [package]
 name = "coresense-desktop"
-version = "1.3.0"
+version = "1.3.1"
 description = "CoreSense — AI-powered electronics diagnostics and repair intelligence desktop application"
 authors = ["CoreSense"]
 edition = "2021"
