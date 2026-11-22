@@ -21,7 +21,11 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { CORESENSE_VERSION, type StructuredPcbInspection } from '@coresense/shared';
+import {
+  CORESENSE_PUBLIC_WEBSITE_URL,
+  CORESENSE_VERSION,
+  type StructuredPcbInspection,
+} from '@coresense/shared';
 import {
   type MobileReleaseInfo,
   detectMobilePlatform,
@@ -303,7 +307,9 @@ export const App: React.FC = () => {
             email: email.trim(),
             password,
             options: {
-              emailRedirectTo: window.location.origin,
+              emailRedirectTo: nativeApp
+                ? `${CORESENSE_PUBLIC_WEBSITE_URL}?auth=confirmed&source=android`
+                : window.location.origin,
               data: { display_name: cleanName },
             },
           });

@@ -5,6 +5,7 @@ import { z } from 'zod';
 // ============================================================================
 export const CORESENSE_VERSION = '1.3.0';
 export const CORESENSE_TAGLINE = "Understand what's happening beneath the surface.";
+export const CORESENSE_PUBLIC_WEBSITE_URL = 'https://hrdk6.github.io/CoreSense/';
 
 export const PlatformSchema = z.enum(['windows', 'macos', 'linux', 'ios', 'android', 'web']);
 export type Platform = z.infer<typeof PlatformSchema>;

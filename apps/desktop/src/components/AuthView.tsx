@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { KeyRound, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { CORESENSE_PUBLIC_WEBSITE_URL } from '@coresense/shared';
 import { apiRequest, detectClientPlatform, getInstallId, setAuthToken } from '../api';
 import { getSupabaseClient } from '../supabase';
 import { BrandLogo } from './BrandLogo';
@@ -111,6 +112,9 @@ export const AuthView: React.FC<AuthViewProps> = ({
         const { error: resendErr } = await sb.auth.resend({
           type: 'signup',
           email: unconfirmedEmail,
+          options: {
+            emailRedirectTo: `${CORESENSE_PUBLIC_WEBSITE_URL}?auth=confirmed&source=desktop`,
+          },
         });
         if (resendErr) throw resendErr;
         setSuccessMsg(`Confirmation email resent to ${unconfirmedEmail}. Check your inbox (and spam folder).`);
@@ -154,7 +158,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             email: email.trim(),
             password,
             options: {
-              emailRedirectTo: window.location.origin,
+              emailRedirectTo: `${CORESENSE_PUBLIC_WEBSITE_URL}?auth=confirmed&source=desktop`,
               data: { display_name: cleanName },
             },
           });
@@ -184,7 +188,7 @@ export const AuthView: React.FC<AuthViewProps> = ({
             setMode('login');
           } else {
             const { error: resetErr } = await sb.auth.resetPasswordForEmail(email.trim(), {
-              redirectTo: window.location.origin,
+              redirectTo: `${CORESENSE_PUBLIC_WEBSITE_URL}?auth=recovery&source=desktop`,
             });
             if (resetErr) throw resetErr;
             setSuccessMsg(

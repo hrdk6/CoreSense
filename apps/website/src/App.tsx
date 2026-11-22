@@ -18,6 +18,7 @@ import {
   Terminal,
   TrendingUp,
 } from 'lucide-react';
+import { AuthCallbackCard } from './components/AuthCallbackCard';
 import { BenchSpecimen } from './components/BenchSpecimen';
 import {
   ANDROID_SIGNING_SHA256,
@@ -296,6 +297,8 @@ export const App: React.FC = () => {
       </header>
 
       <main id="top" className="flex-1">
+        <AuthCallbackCard />
+
         {/* Asymmetric Hero: Editorial thesis left · Live Interactive Bench Specimen right */}
         <section className="border-b border-[var(--cs-border)]">
           <div className="mx-auto max-w-6xl px-5 py-14 lg:py-20 grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-start">
