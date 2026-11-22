@@ -185,8 +185,8 @@ export const BenchSpecimen: React.FC = () => {
                   strokeWidth="1.5"
                 />
                 <text
-                  x={spec.anomalyDot.cx - 8}
-                  y={spec.anomalyDot.cy < 45 ? spec.anomalyDot.cy + 19 : spec.anomalyDot.cy - 12}
+                  x={spec.anomalyDot.cx - 16}
+                  y={spec.anomalyDot.cy < 45 ? spec.anomalyDot.cy + 4 : spec.anomalyDot.cy - 14}
                   textAnchor="end"
                   fill="var(--cs-ink)"
                   fontSize="10.5"
